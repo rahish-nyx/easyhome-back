@@ -18,7 +18,11 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 const JWT_SECRET = process.env.JWT_SECRET || "easyhomes_secret_key";
 
-app.use(cors());
+app.use(cors({
+  origin: "https://easyhome-front.vercel.app",
+  credentials: true
+}));
+
 app.use(express.json());
 if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
 app.use("/uploads", express.static("uploads"));
