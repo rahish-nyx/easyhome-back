@@ -10,7 +10,7 @@ const jwt = require("jsonwebtoken");
 const http = require("http");
 const { Server } = require("socket.io");
 const geolib = require("geolib");
-const nodemailer = require("nodemailer");
+//const nodemailer = require("nodemailer");
 
 const app = express();
 console.log("MONGODB_URI:", process.env.MONGODB_URI);
@@ -39,7 +39,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
-const transporter = nodemailer.createTransport({
+/*const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
   port: 587,
   secure: false,
@@ -49,7 +49,11 @@ const transporter = nodemailer.createTransport({
 transporter.verify((error) => {
   if (error) console.log("Email config error:", error.message);
   else console.log("Email server ready");
-});
+});   */
+
+
+const { Resend } = require("resend");
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 const otpStore = {};
 let adminSubscriptionUPI = process.env.ADMIN_UPI || "admin@easyhome.upi";
@@ -324,8 +328,8 @@ async function setSetting(key, value) {
 
 // ================= OTP =================
 async function sendOtpEmail(email, otp) {
-  await transporter.sendMail({
-    from: `"EasyHome" <${process.env.EMAIL_USER}>`,
+  await resend.emails.send({
+  from: "onboarding@resend.dev",
     to: email,
     subject: "Your EasyHome OTP",
     html: `<div style="font-family:Arial;max-width:400px;margin:0 auto;padding:20px;border-radius:12px;border:1px solid #eee;"><h2 style="color:#ff3c00;">EasyHome</h2><p>Your OTP is:</p><div style="background:#fff8f0;border:2px solid #ff7a18;border-radius:10px;padding:16px;text-align:center;"><h1 style="color:#ff3c00;letter-spacing:8px;margin:0;">${otp}</h1></div><p style="color:#888;font-size:13px;margin-top:12px;">Valid for 5 minutes. Do not share.</p></div>`,
