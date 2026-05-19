@@ -10,24 +10,33 @@ const jwt = require("jsonwebtoken");
 const http = require("http");
 const { Server } = require("socket.io");
 const geolib = require("geolib");
-const { Resend } = require("resend");
+const nodemailer = require("nodemailer");
 
 const app = express();
 console.log("MONGODB_URI:", process.env.MONGODB_URI);
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
 const JWT_SECRET = process.env.JWT_SECRET || "easyhomes_secret_key";
 
-// ✅ Resend email client
-const resend = new Resend(process.env.RESEND_API_KEY);
+const allowedOrigins = [
+  "https://easyhome-front.vercel.app",
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
 
-app.use(
-  cors({
-    origin: "*",
-    credentials: true,
-  }),
-);
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`CORS blocked: ${origin}`));
+    }
+  },
+  credentials: true,
+};
 
+const io = new Server(server, { cors: corsOptions });
+
+app.use(cors(corsOptions));
 app.use(express.json());
 if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
 app.use("/uploads", express.static("uploads"));
@@ -44,26 +53,25 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
+const transporter = nodemailer.createTransport({
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
+  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+  tls: { rejectUnauthorized: false },
+});
+transporter.verify((error) => {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    console.log("Email config error: EMAIL_USER or EMAIL_PASS missing");
+  } else if (error) console.log("Email config error:", error.message);
+  else console.log("Email server ready");
+});
+
 const otpStore = {};
 let adminSubscriptionUPI = process.env.ADMIN_UPI || "admin@easyhome.upi";
 
-// ================= EMAIL HELPER =================
-// ✅ Single send function using Resend — replace FROM with your verified domain
-async function sendEmail(to, subject, html) {
-  try {
-    await resend.emails.send({
-      from: process.env.EMAIL_FROM || "EasyHome <onboarding@resend.dev>",
-      to,
-      subject,
-      html,
-    });
-    console.log(`Email sent to ${to}`);
-  } catch (err) {
-    console.log("Email error:", err.message);
-  }
-}
-
 // ================= SCHEMAS =================
+
 const customerSchema = new mongoose.Schema({
   name: String,
   email: { type: String, unique: true },
@@ -85,7 +93,7 @@ const workerSchema = new mongoose.Schema({
   phone: String,
   service: String,
   location: String,
-  pricePerHour: Number,
+  pricePerHour: Number, // kept for DB compat — used as pricePerWork
   rating: { type: Number, default: 0 },
   jobs: { type: Number, default: 0 },
   isUrgent: { type: Boolean, default: false },
@@ -134,7 +142,6 @@ const urgentSchema = new mongoose.Schema({
   location: String,
   createdAt: { type: Date, default: Date.now },
 });
-
 const notificationSchema = new mongoose.Schema({
   workerId: String,
   bookingId: String,
@@ -147,11 +154,12 @@ const notificationSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
+// ✅ UPDATED citySchema — now includes serviceRadius for geofencing
 const citySchema = new mongoose.Schema({
   name: String,
   lat: Number,
   lng: Number,
-  serviceRadius: { type: Number, default: 10000 },
+  serviceRadius: { type: Number, default: 10000 }, // radius in meters (default 10km)
   active: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
 });
@@ -161,7 +169,6 @@ const adminSchema = new mongoose.Schema({
   password: String,
   createdAt: { type: Date, default: Date.now },
 });
-
 const chatSchema = new mongoose.Schema({
   senderId: String,
   senderName: String,
@@ -172,7 +179,6 @@ const chatSchema = new mongoose.Schema({
   read: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now },
 });
-
 const ratingSchema = new mongoose.Schema({
   workerId: String,
   workerName: String,
@@ -182,14 +188,12 @@ const ratingSchema = new mongoose.Schema({
   stars: { type: Number, min: 1, max: 5 },
   createdAt: { type: Date, default: Date.now },
 });
-
 const serviceSchema = new mongoose.Schema({
   name: String,
   icon: String,
   active: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
 });
-
 const adminRatingSchema = new mongoose.Schema({
   targetId: String,
   targetName: String,
@@ -199,7 +203,6 @@ const adminRatingSchema = new mongoose.Schema({
   note: { type: String, default: "" },
   createdAt: { type: Date, default: Date.now },
 });
-
 const subscriptionSchema = new mongoose.Schema({
   userId: String,
   userRole: String,
@@ -212,7 +215,6 @@ const subscriptionSchema = new mongoose.Schema({
   endDate: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now },
 });
-
 const commissionSchema = new mongoose.Schema({
   workerId: String,
   workerName: String,
@@ -222,7 +224,6 @@ const commissionSchema = new mongoose.Schema({
   screenshotNote: { type: String, default: "" },
   createdAt: { type: Date, default: Date.now },
 });
-
 const settingsSchema = new mongoose.Schema({
   key: { type: String, unique: true },
   value: mongoose.Schema.Types.Mixed,
@@ -254,7 +255,6 @@ function authMiddleware(req, res, next) {
     res.status(401).json({ error: "Invalid token" });
   }
 }
-
 function adminMiddleware(req, res, next) {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ error: "No token" });
@@ -308,7 +308,6 @@ async function createDefaultAdmin() {
     console.log("Admin init error:", err);
   }
 }
-
 async function seedServices() {
   const count = await Service.countDocuments();
   if (count === 0) {
@@ -323,7 +322,6 @@ async function seedServices() {
     console.log("Default services seeded");
   }
 }
-
 createDefaultAdmin();
 seedServices();
 
@@ -342,18 +340,19 @@ async function setSetting(key, value) {
 
 // ================= OTP =================
 async function sendOtpEmail(email, otp) {
-  await sendEmail(
-    email,
-    "Your EasyHome OTP",
-    `<div style="font-family:Arial;max-width:400px;margin:0 auto;padding:20px;border-radius:12px;border:1px solid #eee;">
-      <h2 style="color:#ff3c00;">EasyHome</h2>
-      <p>Your OTP is:</p>
-      <div style="background:#fff8f0;border:2px solid #ff7a18;border-radius:10px;padding:16px;text-align:center;">
-        <h1 style="color:#ff3c00;letter-spacing:8px;margin:0;">${otp}</h1>
-      </div>
-      <p style="color:#888;font-size:13px;margin-top:12px;">Valid for 5 minutes. Do not share.</p>
-    </div>`,
-  );
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    throw new Error("EMAIL_USER or EMAIL_PASS missing");
+  }
+
+  const info = await transporter.sendMail({
+    from: `"EasyHome" <${process.env.EMAIL_USER}>`,
+    to: email,
+    subject: "Your EasyHome OTP",
+    html: `<div style="font-family:Arial;max-width:400px;margin:0 auto;padding:20px;border-radius:12px;border:1px solid #eee;"><h2 style="color:#ff3c00;">EasyHome</h2><p>Your OTP is:</p><div style="background:#fff8f0;border:2px solid #ff7a18;border-radius:10px;padding:16px;text-align:center;"><h1 style="color:#ff3c00;letter-spacing:8px;margin:0;">${otp}</h1></div><p style="color:#888;font-size:13px;margin-top:12px;">Valid for 5 minutes. Do not share.</p></div>`,
+  });
+
+  console.log("OTP email sent:", info.messageId, "to", email);
+  return info;
 }
 
 // ================= AUTH ROUTES =================
@@ -367,11 +366,11 @@ app.post("/customer/send-otp", async (req, res) => {
         return res.status(400).json({ error: "Email not registered" });
     }
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    otpStore[email] = { otp, expires: Date.now() + 5 * 60 * 1000 };
     await sendOtpEmail(email, otp);
+    otpStore[email] = { otp, expires: Date.now() + 5 * 60 * 1000 };
     res.json({ message: "OTP sent" });
   } catch (err) {
-    console.log("OTP Error:", err);
+    console.log("OTP Error:", err?.message || err);
     res.status(500).json({ error: "Failed to send OTP." });
   }
 });
@@ -458,7 +457,7 @@ app.post("/worker/register", async (req, res) => {
     if (await Worker.findOne({ email }))
       return res.status(400).json({ error: "Email already registered" });
     const hashed = await bcrypt.hash(password, 10);
-    const price = Math.max(200, Number(pricePerHour) || 200);
+    const price = Math.max(200, Number(pricePerHour) || 200); // ✅ min 200
     await Worker.create({
       name,
       email,
@@ -528,7 +527,6 @@ app.get("/admin/admins", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.post("/admin/add-admin", adminMiddleware, async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -554,7 +552,6 @@ app.post("/admin/add-admin", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed to add admin" });
   }
 });
-
 app.delete("/admin/remove-admin/:id", adminMiddleware, async (req, res) => {
   try {
     const count = await Admin.countDocuments();
@@ -588,8 +585,9 @@ function radiusToMeters(value) {
 async function findServiceArea(lat, lng) {
   const userLat = cleanCoordinate(lat);
   const userLng = cleanCoordinate(lng);
-  if (userLat === null || userLng === null)
+  if (userLat === null || userLng === null) {
     return { error: "Valid location required" };
+  }
 
   const cities = await City.find({ active: true });
   if (cities.length === 0) return { allowed: true, city: null };
@@ -624,12 +622,14 @@ async function enforceServiceArea(req, res, next) {
   try {
     const lat = req.body.lat || req.query.lat;
     const lng = req.body.lng || req.query.lng;
+
     const area = await findServiceArea(lat, lng);
     if (area.error) return res.status(400).json({ error: area.error });
     if (!area.allowed)
-      return res
-        .status(403)
-        .json({ error: "Service is not available in this area yet." });
+      return res.status(403).json({
+        error: "Service is not available in this area yet.",
+      });
+
     req.serviceArea = area;
     next();
   } catch (err) {
@@ -643,6 +643,7 @@ app.post("/check-service-area", async (req, res) => {
     const area = await findServiceArea(req.body.lat, req.body.lng);
     if (area.error)
       return res.status(400).json({ allowed: false, message: area.error });
+
     if (!area.allowed) {
       return res.json({
         allowed: false,
@@ -652,6 +653,7 @@ app.post("/check-service-area", async (req, res) => {
         serviceRadiusMeters: area.nearest?.serviceRadius || null,
       });
     }
+
     res.json({
       allowed: true,
       city: area.city?.name || "Your Area",
@@ -660,9 +662,10 @@ app.post("/check-service-area", async (req, res) => {
     });
   } catch (err) {
     console.log("Service area check error:", err);
-    res
-      .status(500)
-      .json({ allowed: false, message: "Service area check failed" });
+    res.status(500).json({
+      allowed: false,
+      message: "Service area check failed",
+    });
   }
 });
 
@@ -675,6 +678,7 @@ app.get("/admin/cities", adminMiddleware, async (req, res) => {
   }
 });
 
+// ✅ UPDATED — now accepts serviceRadius
 app.post("/admin/city", adminMiddleware, async (req, res) => {
   try {
     const { name, lat, lng, serviceRadius } = req.body;
@@ -695,16 +699,19 @@ app.post("/admin/city", adminMiddleware, async (req, res) => {
   }
 });
 
+// ✅ UPDATED — now can update serviceRadius too
 app.put("/admin/city/:id", adminMiddleware, async (req, res) => {
   try {
     const city = await City.findById(req.params.id);
     if (!city) return res.status(404).json({ error: "Not found" });
+    // If body has serviceRadius, update it; otherwise toggle active
     if (req.body.serviceRadius !== undefined) {
       city.serviceRadius = radiusToMeters(req.body.serviceRadius);
+      await city.save();
     } else {
       city.active = !city.active;
+      await city.save();
     }
-    await city.save();
     res.json(city);
   } catch {
     res.status(500).json({ error: "Failed" });
@@ -730,7 +737,6 @@ app.get("/admin/users", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.delete("/admin/user/:role/:id", adminMiddleware, async (req, res) => {
   try {
     const { role, id } = req.params;
@@ -741,7 +747,6 @@ app.delete("/admin/user/:role/:id", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/admin/bookings", adminMiddleware, async (req, res) => {
   try {
     const oneMonthAgo = new Date();
@@ -756,7 +761,6 @@ app.get("/admin/bookings", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.delete("/admin/booking/:id", adminMiddleware, async (req, res) => {
   try {
     await Booking.findByIdAndUpdate(req.params.id, { removedByAdmin: true });
@@ -765,7 +769,6 @@ app.delete("/admin/booking/:id", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/admin/pending-workers", adminMiddleware, async (req, res) => {
   try {
     res.json(await Worker.find({ approved: false }, "-password"));
@@ -773,7 +776,6 @@ app.get("/admin/pending-workers", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put("/admin/worker/approve/:id", adminMiddleware, async (req, res) => {
   try {
     const worker = await Worker.findByIdAndUpdate(
@@ -781,39 +783,41 @@ app.put("/admin/worker/approve/:id", adminMiddleware, async (req, res) => {
       { approved: true },
       { new: true },
     );
-    await sendEmail(
-      worker.email,
-      "EasyHome Worker Account Approved!",
-      `<div style="font-family:Arial;padding:20px;">
-        <h2 style="color:#ff3c00;">EasyHome</h2>
-        <p>Hi <strong>${worker.name}</strong>, your account has been approved! You can now login and start accepting jobs.</p>
-      </div>`,
-    );
+    try {
+      await transporter.sendMail({
+        from: `"EasyHome" <${process.env.EMAIL_USER}>`,
+        to: worker.email,
+        subject: "EasyHome Worker Account Approved!",
+        html: `<div style="font-family:Arial;padding:20px;"><h2 style="color:#ff3c00;">EasyHome</h2><p>Hi <strong>${worker.name}</strong>, your account has been approved!</p></div>`,
+      });
+    } catch (e) {
+      console.log("Email failed:", e.message);
+    }
     res.json({ message: "Worker approved" });
   } catch {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put("/admin/worker/reject/:id", adminMiddleware, async (req, res) => {
   try {
     const { reason } = req.body;
     const worker = await Worker.findById(req.params.id);
-    await sendEmail(
-      worker.email,
-      "EasyHome Worker Application Update",
-      `<div style="font-family:Arial;padding:20px;">
-        <h2 style="color:#ff3c00;">EasyHome</h2>
-        <p>Hi <strong>${worker.name}</strong>, your application was not approved.${reason ? ` Reason: ${reason}` : ""}</p>
-      </div>`,
-    );
+    try {
+      await transporter.sendMail({
+        from: `"EasyHome" <${process.env.EMAIL_USER}>`,
+        to: worker.email,
+        subject: "EasyHome Worker Application Update",
+        html: `<div style="font-family:Arial;padding:20px;"><h2 style="color:#ff3c00;">EasyHome</h2><p>Hi <strong>${worker.name}</strong>, your application was not approved.${reason ? ` Reason: ${reason}` : ""}</p></div>`,
+      });
+    } catch (e) {
+      console.log("Email failed:", e.message);
+    }
     await Worker.findByIdAndDelete(req.params.id);
     res.json({ message: "Worker rejected" });
   } catch {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put("/admin/worker/urgent/:id", adminMiddleware, async (req, res) => {
   try {
     const worker = await Worker.findById(req.params.id);
@@ -825,7 +829,6 @@ app.put("/admin/worker/urgent/:id", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.post("/admin/rate", adminMiddleware, async (req, res) => {
   try {
     const { targetId, targetName, targetRole, stars, badge, note } = req.body;
@@ -855,7 +858,6 @@ app.post("/admin/rate", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/admin/ratings", adminMiddleware, async (req, res) => {
   try {
     res.json(await AdminRating.find().sort({ createdAt: -1 }));
@@ -863,7 +865,6 @@ app.get("/admin/ratings", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/admin/services", adminMiddleware, async (req, res) => {
   try {
     res.json(await Service.find().sort({ createdAt: 1 }));
@@ -871,7 +872,6 @@ app.get("/admin/services", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.post("/admin/service", adminMiddleware, async (req, res) => {
   try {
     const { name, icon } = req.body;
@@ -884,7 +884,6 @@ app.post("/admin/service", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put("/admin/service/:id", adminMiddleware, async (req, res) => {
   try {
     res.json(
@@ -894,7 +893,6 @@ app.put("/admin/service/:id", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.delete("/admin/service/:id", adminMiddleware, async (req, res) => {
   try {
     await Service.findByIdAndDelete(req.params.id);
@@ -903,7 +901,6 @@ app.delete("/admin/service/:id", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/admin/stats", adminMiddleware, async (req, res) => {
   try {
     const oneMonthAgo = new Date();
@@ -936,7 +933,6 @@ app.get("/subscription/upi", async (req, res) => {
     res.json({ upi: adminSubscriptionUPI });
   }
 });
-
 app.get("/subscription/my", authMiddleware, async (req, res) => {
   try {
     res.json(
@@ -948,7 +944,6 @@ app.get("/subscription/my", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.post("/subscription/request", authMiddleware, async (req, res) => {
   try {
     const { screenshotNote } = req.body;
@@ -982,7 +977,6 @@ app.post("/subscription/request", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/admin/subscriptions", adminMiddleware, async (req, res) => {
   try {
     res.json(await Subscription.find().sort({ createdAt: -1 }));
@@ -990,7 +984,6 @@ app.get("/admin/subscriptions", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put(
   "/admin/subscription/approve/:id",
   adminMiddleware,
@@ -1010,21 +1003,22 @@ app.put(
         subscriptionEnd: end,
         ...(sub.userRole === "worker" ? { isUrgent: true } : {}),
       });
-      await sendEmail(
-        sub.userEmail,
-        "EasyHome Premium Activated!",
-        `<div style="font-family:Arial;padding:20px;">
-        <h2 style="color:#ff3c00;">EasyHome Premium</h2>
-        <p>Hi <strong>${sub.userName}</strong>, your subscription is active until <strong>${end.toDateString()}</strong>!</p>
-      </div>`,
-      );
+      try {
+        await transporter.sendMail({
+          from: `"EasyHome" <${process.env.EMAIL_USER}>`,
+          to: sub.userEmail,
+          subject: "EasyHome Premium Activated!",
+          html: `<div style="font-family:Arial;padding:20px;"><h2 style="color:#ff3c00;">EasyHome Premium</h2><p>Hi <strong>${sub.userName}</strong>, your subscription is active until <strong>${end.toDateString()}</strong>!</p></div>`,
+        });
+      } catch (e) {
+        console.log("Email error:", e.message);
+      }
       res.json({ message: "Approved" });
     } catch {
       res.status(500).json({ error: "Failed" });
     }
   },
 );
-
 app.put("/admin/subscription/reject/:id", adminMiddleware, async (req, res) => {
   try {
     const sub = await Subscription.findByIdAndUpdate(
@@ -1032,20 +1026,21 @@ app.put("/admin/subscription/reject/:id", adminMiddleware, async (req, res) => {
       { status: "rejected" },
       { new: true },
     );
-    await sendEmail(
-      sub.userEmail,
-      "EasyHome Subscription Update",
-      `<div style="font-family:Arial;padding:20px;">
-        <h2 style="color:#ff3c00;">EasyHome</h2>
-        <p>Hi ${sub.userName}, your payment could not be verified. Please try again.</p>
-      </div>`,
-    );
+    try {
+      await transporter.sendMail({
+        from: `"EasyHome" <${process.env.EMAIL_USER}>`,
+        to: sub.userEmail,
+        subject: "EasyHome Subscription Update",
+        html: `<div style="font-family:Arial;padding:20px;"><h2 style="color:#ff3c00;">EasyHome</h2><p>Hi ${sub.userName}, your payment could not be verified. Please try again.</p></div>`,
+      });
+    } catch (e) {
+      console.log("Email error:", e.message);
+    }
     res.json({ message: "Rejected" });
   } catch {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put("/admin/subscription/upi", adminMiddleware, async (req, res) => {
   try {
     const { upi } = req.body;
@@ -1088,7 +1083,6 @@ app.get("/settings", async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put(
   "/admin/settings",
   adminMiddleware,
@@ -1147,7 +1141,6 @@ app.put("/commission/paid/:bookingId", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/commission/:bookingId", authMiddleware, async (req, res) => {
   try {
     res.json(
@@ -1160,7 +1153,6 @@ app.get("/commission/:bookingId", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/worker/can-accept", authMiddleware, async (req, res) => {
   try {
     const worker = await Worker.findById(req.user.id);
@@ -1183,7 +1175,6 @@ app.get("/worker/can-accept", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/admin/commissions", adminMiddleware, async (req, res) => {
   try {
     res.json(await Commission.find().sort({ createdAt: -1 }));
@@ -1191,7 +1182,6 @@ app.get("/admin/commissions", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put("/admin/commission/approve/:id", adminMiddleware, async (req, res) => {
   try {
     await Commission.findByIdAndUpdate(
@@ -1204,7 +1194,6 @@ app.put("/admin/commission/approve/:id", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put("/admin/commission/reject/:id", adminMiddleware, async (req, res) => {
   try {
     await Commission.findByIdAndUpdate(req.params.id, {
@@ -1241,7 +1230,6 @@ app.put("/booking/:id/set-price", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put("/booking/:id/confirm-price", authMiddleware, async (req, res) => {
   try {
     const { price } = req.body;
@@ -1263,7 +1251,6 @@ app.put("/booking/:id/confirm-price", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put("/booking/:id/customer-offer", authMiddleware, async (req, res) => {
   try {
     const { price } = req.body;
@@ -1349,7 +1336,6 @@ app.get("/admin/chats", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/admin/chat/:userId", adminMiddleware, async (req, res) => {
   try {
     const messages = await Chat.find({
@@ -1364,7 +1350,6 @@ app.get("/admin/chat/:userId", adminMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.post("/admin/chat/:userId", adminMiddleware, async (req, res) => {
   try {
     const { message, receiverRole } = req.body;
@@ -1399,7 +1384,6 @@ app.get("/customer/profile", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
-
 app.put("/customer/profile", authMiddleware, async (req, res) => {
   try {
     const { name, phone } = req.body;
@@ -1414,7 +1398,6 @@ app.put("/customer/profile", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Update failed" });
   }
 });
-
 app.get("/worker/profile", authMiddleware, async (req, res) => {
   try {
     const worker = await Worker.findById(req.user.id, "-password");
@@ -1431,7 +1414,6 @@ app.get("/worker/profile", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
-
 app.put("/worker/profile", authMiddleware, async (req, res) => {
   try {
     const {
@@ -1445,7 +1427,7 @@ app.put("/worker/profile", authMiddleware, async (req, res) => {
       lat,
       lng,
     } = req.body;
-    const price = Math.max(200, Number(pricePerHour) || 200);
+    const price = Math.max(200, Number(pricePerHour) || 200); // ✅ min 200
     res.json(
       await Worker.findByIdAndUpdate(
         req.user.id,
@@ -1467,7 +1449,6 @@ app.put("/worker/profile", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Update failed" });
   }
 });
-
 app.put("/change-password", authMiddleware, async (req, res) => {
   try {
     const { oldPassword, newPassword } = req.body;
@@ -1497,7 +1478,6 @@ app.get("/notifications", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put("/notifications/read", authMiddleware, async (req, res) => {
   try {
     await Notification.updateMany(
@@ -1509,7 +1489,6 @@ app.put("/notifications/read", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.delete("/notification/:id", authMiddleware, async (req, res) => {
   try {
     await Notification.findByIdAndDelete(req.params.id);
@@ -1531,7 +1510,6 @@ app.get("/chat", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.post("/chat", authMiddleware, async (req, res) => {
   try {
     const { message } = req.body;
@@ -1580,7 +1558,6 @@ app.post("/rating", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/rating/:workerId", async (req, res) => {
   try {
     res.json(
@@ -1592,7 +1569,6 @@ app.get("/rating/:workerId", async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/rating/check/:bookingId", authMiddleware, async (req, res) => {
   try {
     res.json({
@@ -1614,7 +1590,6 @@ app.get("/services", async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/urgent", async (req, res) => {
   try {
     const ago = new Date();
@@ -1625,6 +1600,7 @@ app.get("/urgent", async (req, res) => {
   }
 });
 
+// ✅ Phone/email hidden from public
 app.get("/urgent-workers", async (req, res) => {
   try {
     res.json(
@@ -1637,7 +1613,6 @@ app.get("/urgent-workers", async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/workers", async (req, res) => {
   try {
     res.json(
@@ -1658,7 +1633,6 @@ app.get("/cities", async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.get("/normal-jobs", async (req, res) => {
   try {
     const ago = new Date();
@@ -1688,18 +1662,22 @@ app.get("/bookings", authMiddleware, async (req, res) => {
         service: worker.service,
         removedByAdmin: { $ne: true },
       }).sort({ _id: -1 });
+
       const workerArea = await findServiceArea(worker.lat, worker.lng);
       data = allWorkerJobs.filter((job) => {
-        const alreadyAssigned =
+        const alreadyAssignedToWorker =
           job.workerId === req.user.id || job.worker === worker.name;
-        if (alreadyAssigned) return true;
+
+        if (alreadyAssignedToWorker) return true;
         if (job.status !== "pending") return false;
         if (!workerArea.allowed || !workerArea.serviceRadius) return false;
         if (job.lat === null || job.lng === null) return false;
+
         const distance = geolib.getDistance(
           { latitude: Number(worker.lat), longitude: Number(worker.lng) },
           { latitude: Number(job.lat), longitude: Number(job.lng) },
         );
+
         return distance <= workerArea.serviceRadius;
       });
     } else {
@@ -1721,7 +1699,7 @@ app.post(
   upload.single("image"),
   async (req, res) => {
     try {
-      let price = Math.max(200, Number(req.body.pricePerHour) || 200);
+      let price = Math.max(200, Number(req.body.pricePerHour) || 200); // ✅ min 200
       const urgency = req.body.urgency || "normal";
       const finalPrice = urgency === "urgent" ? Math.round(price * 1.1) : price;
       const service = req.body.service;
@@ -1788,7 +1766,6 @@ app.put("/booking/:id", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Update failed" });
   }
 });
-
 app.put("/booking/:id/start", authMiddleware, async (req, res) => {
   try {
     res.json(
@@ -1802,7 +1779,6 @@ app.put("/booking/:id/start", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put("/booking/:id/complete", authMiddleware, async (req, res) => {
   try {
     res.json(
@@ -1816,7 +1792,6 @@ app.put("/booking/:id/complete", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed" });
   }
 });
-
 app.put("/booking/:id/payment", authMiddleware, async (req, res) => {
   try {
     const { paymentMode } = req.body;
@@ -1849,42 +1824,37 @@ app.put("/booking/:id/payment", authMiddleware, async (req, res) => {
   }
 });
 
-app.get(
-  "/nearby-jobs",
-  authMiddleware,
-  enforceServiceArea,
-  async (req, res) => {
-    try {
-      const { lat, lng, radius = 10000 } = req.query;
-      if (!lat || !lng)
-        return res.status(400).json({ error: "Location required" });
-      const worker = await Worker.findById(req.user.id);
-      if (!worker) return res.status(404).json({ error: "Not found" });
-      const ago = new Date();
-      ago.setMonth(ago.getMonth() - 1);
-      const jobs = await Booking.find({
-        service: worker.service,
-        urgency: "normal",
-        status: "pending",
-        lat: { $ne: null },
-        lng: { $ne: null },
-        removedByAdmin: { $ne: true },
-        createdAt: { $gte: ago },
-      });
-      res.json(
-        jobs.filter(
-          (job) =>
-            geolib.getDistance(
-              { latitude: Number(lat), longitude: Number(lng) },
-              { latitude: job.lat, longitude: job.lng },
-            ) <= Number(radius),
-        ),
-      );
-    } catch (err) {
-      console.log(err);
-      res.status(500).json({ error: "Failed" });
-    }
-  },
-);
+app.get("/nearby-jobs", authMiddleware, enforceServiceArea, async (req, res) => {
+  try {
+    const { lat, lng, radius = 10000 } = req.query;
+    if (!lat || !lng)
+      return res.status(400).json({ error: "Location required" });
+    const worker = await Worker.findById(req.user.id);
+    if (!worker) return res.status(404).json({ error: "Not found" });
+    const ago = new Date();
+    ago.setMonth(ago.getMonth() - 1);
+    const jobs = await Booking.find({
+      service: worker.service,
+      urgency: "normal",
+      status: "pending",
+      lat: { $ne: null },
+      lng: { $ne: null },
+      removedByAdmin: { $ne: true },
+      createdAt: { $gte: ago },
+    });
+    res.json(
+      jobs.filter(
+        (job) =>
+          geolib.getDistance(
+            { latitude: Number(lat), longitude: Number(lng) },
+            { latitude: job.lat, longitude: job.lng },
+          ) <= Number(radius),
+      ),
+    );
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: "Failed" });
+  }
+});
 
 server.listen(process.env.PORT || 5000, () => console.log("Server running"));
