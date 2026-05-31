@@ -19,6 +19,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "easyhomes_secret_key";
 
 const allowedOrigins = [
   "https://easyhome-front.vercel.app",
+  "https://easyhomeservice.netlify.app",
   "http://localhost:5173",
   "http://localhost:3000",
 ];
