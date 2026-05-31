@@ -43,7 +43,11 @@ app.use("/uploads", express.static("uploads"));
 
 mongoose
   .connect(process.env.MONGODB_URI)
-  .then(() => console.log("MongoDB Atlas Connected"))
+  .then(async () => {
+    console.log("MongoDB Atlas Connected");
+    await createDefaultAdmin();
+    await seedServices();
+  })
   .catch((err) => console.log("DB Error:", err));
 
 const storage = multer.diskStorage({
@@ -322,8 +326,6 @@ async function seedServices() {
     console.log("Default services seeded");
   }
 }
-createDefaultAdmin();
-seedServices();
 
 // ================= SETTINGS HELPERS =================
 async function getSetting(key, defaultValue) {
