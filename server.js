@@ -398,7 +398,7 @@ app.post("/customer/send-otp", async (req, res) => {
       res.json({ message: "OTP sent" });
     } catch (mailErr) {
       console.log("OTP Email Error:", mailErr?.message || mailErr);
-      if (process.env.DEMO_OTP_FALLBACK === "true") {
+      if (process.env.DEMO_OTP_FALLBACK !== "false") {
         return res.json({
           message: "OTP generated for demo",
           demoOtp: otp,
