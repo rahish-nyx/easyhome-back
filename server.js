@@ -11,6 +11,9 @@ const http = require("http");
 const { Server } = require("socket.io");
 const geolib = require("geolib");
 const nodemailer = require("nodemailer");
+const dns = require("dns");
+
+dns.setDefaultResultOrder("ipv4first");
 
 const app = express();
 console.log("MONGODB_URI:", process.env.MONGODB_URI);
