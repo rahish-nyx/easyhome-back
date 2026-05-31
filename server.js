@@ -61,23 +61,37 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
-  family: 4,
-  connectionTimeout: 30000,
-  greetingTimeout: 30000,
-  socketTimeout: 30000,
-  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-  tls: { rejectUnauthorized: false },
-});
-transporter.verify((error) => {
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-    console.log("Email config error: EMAIL_USER or EMAIL_PASS missing");
-  } else if (error) console.log("Email config error:", error.message);
-  else console.log("Email server ready");
-});
+async function createEmailTransporter() {
+  const [smtpIp] = await dns.promises.resolve4("smtp.gmail.com");
+  console.log("Using Gmail SMTP IPv4:", smtpIp);
+
+  return nodemailer.createTransport({
+    host: smtpIp,
+    port: 465,
+    secure: true,
+    connectionTimeout: 30000,
+    greetingTimeout: 30000,
+    socketTimeout: 30000,
+    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    tls: {
+      servername: "smtp.gmail.com",
+      rejectUnauthorized: false,
+    },
+  });
+}
+
+if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+  console.log("Email config error: EMAIL_USER or EMAIL_PASS missing");
+} else {
+  createEmailTransporter()
+    .then((mail) =>
+      mail.verify((error) => {
+        if (error) console.log("Email config error:", error.message);
+        else console.log("Email server ready");
+      }),
+    )
+    .catch((error) => console.log("Email config error:", error.message));
+}
 
 const otpStore = {};
 let adminSubscriptionUPI = process.env.ADMIN_UPI || "admin@easyhome.upi";
@@ -354,7 +368,8 @@ async function sendOtpEmail(email, otp) {
     throw new Error("EMAIL_USER or EMAIL_PASS missing");
   }
 
-  const info = await transporter.sendMail({
+  const mail = await createEmailTransporter();
+  const info = await mail.sendMail({
     from: `"EasyHome" <${process.env.EMAIL_USER}>`,
     to: email,
     subject: "Your EasyHome OTP",
