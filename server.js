@@ -391,12 +391,24 @@ app.post("/customer/send-otp", async (req, res) => {
         return res.status(400).json({ error: "Email not registered" });
     }
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    await sendOtpEmail(email, otp);
     otpStore[email] = { otp, expires: Date.now() + 5 * 60 * 1000 };
-    res.json({ message: "OTP sent" });
+
+    try {
+      await sendOtpEmail(email, otp);
+      res.json({ message: "OTP sent" });
+    } catch (mailErr) {
+      console.log("OTP Email Error:", mailErr?.message || mailErr);
+      if (process.env.DEMO_OTP_FALLBACK === "true") {
+        return res.json({
+          message: "OTP generated for demo",
+          demoOtp: otp,
+        });
+      }
+      res.status(500).json({ error: "Failed to send OTP." });
+    }
   } catch (err) {
     console.log("OTP Error:", err?.message || err);
-    res.status(500).json({ error: "Failed to send OTP." });
+    res.status(500).json({ error: "Server error" });
   }
 });
 
