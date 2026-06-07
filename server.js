@@ -380,11 +380,26 @@ async function sendOtpEmail(email, otp) {
   return info;
 }
 
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || "").trim());
+}
+
+function normalizePhone(phone) {
+  return String(phone || "").replace(/\D/g, "");
+}
+
+function isValidPhone(phone) {
+  return /^[6-9]\d{9}$/.test(normalizePhone(phone));
+}
+
 // ================= AUTH ROUTES =================
 app.post("/customer/send-otp", async (req, res) => {
   try {
-    const { email, forRegister } = req.body;
+    const { forRegister } = req.body;
+    const email = String(req.body.email || "").trim().toLowerCase();
     if (!email) return res.status(400).json({ error: "Email required" });
+    if (!isValidEmail(email))
+      return res.status(400).json({ error: "Enter a valid email address" });
     if (!forRegister) {
       const customer = await Customer.findOne({ email });
       if (!customer)
@@ -432,9 +447,15 @@ app.post("/customer/verify-otp", async (req, res) => {
 
 app.post("/customer/register", async (req, res) => {
   try {
-    const { name, email, password, phone } = req.body;
+    const { name, password } = req.body;
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const phone = normalizePhone(req.body.phone);
     if (!name || !email || !password || !phone)
       return res.status(400).json({ error: "All fields required" });
+    if (!isValidEmail(email))
+      return res.status(400).json({ error: "Enter a valid email address" });
+    if (!isValidPhone(phone))
+      return res.status(400).json({ error: "Enter a valid 10-digit phone number" });
     if (await Customer.findOne({ email }))
       return res.status(400).json({ error: "Email already registered" });
     const hashed = await bcrypt.hash(password, 10);
@@ -487,10 +508,15 @@ app.post("/customer/login", async (req, res) => {
 
 app.post("/worker/register", async (req, res) => {
   try {
-    const { name, email, password, phone, service, location, pricePerHour } =
-      req.body;
+    const { name, password, service, location, pricePerHour } = req.body;
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const phone = normalizePhone(req.body.phone);
     if (!name || !email || !password || !phone || !service)
       return res.status(400).json({ error: "All fields required" });
+    if (!isValidEmail(email))
+      return res.status(400).json({ error: "Enter a valid email address" });
+    if (!isValidPhone(phone))
+      return res.status(400).json({ error: "Enter a valid 10-digit phone number" });
     if (await Worker.findOne({ email }))
       return res.status(400).json({ error: "Email already registered" });
     const hashed = await bcrypt.hash(password, 10);
@@ -657,8 +683,12 @@ async function findServiceArea(lat, lng) {
 // ================= GEOFENCE MIDDLEWARE =================
 async function enforceServiceArea(req, res, next) {
   try {
-    const lat = req.body.lat || req.query.lat;
-    const lng = req.body.lng || req.query.lng;
+    const lat = req.body?.lat || req.query.lat;
+    const lng = req.body?.lng || req.query.lng;
+
+    if ((!lat || !lng) && req.body?.location) {
+      return next();
+    }
 
     const area = await findServiceArea(lat, lng);
     if (area.error) return res.status(400).json({ error: area.error });
@@ -1732,8 +1762,8 @@ app.get("/bookings", authMiddleware, async (req, res) => {
 app.post(
   "/booking",
   authMiddleware,
-  enforceServiceArea,
   upload.single("image"),
+  enforceServiceArea,
   async (req, res) => {
     try {
       let price = Math.max(200, Number(req.body.pricePerHour) || 200); // ✅ min 200
