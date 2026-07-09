@@ -1666,7 +1666,24 @@ app.get("/urgent", async (req, res) => {
   try {
     const ago = new Date();
     ago.setMonth(ago.getMonth() - 1);
-    res.json(await Urgent.find({ createdAt: { $gte: ago } }).sort({ _id: -1 }));
+    const urgentBookings = await Booking.find({
+      urgency: "urgent",
+      status: "pending",
+      removedByAdmin: { $ne: true },
+      createdAt: { $gte: ago },
+    }).sort({ createdAt: -1 });
+
+    res.json(
+      urgentBookings.map((booking) => ({
+        _id: booking._id,
+        bookingId: booking._id,
+        title: booking.description,
+        service: booking.service,
+        price: `₹${booking.finalPrice}`,
+        location: booking.location,
+        createdAt: booking.createdAt,
+      })),
+    );
   } catch {
     res.status(500).json({ error: "Failed" });
   }
@@ -1731,7 +1748,7 @@ app.get("/bookings", authMiddleware, async (req, res) => {
     if (req.user.role === "worker") {
       const worker = await Worker.findById(req.user.id);
       const allWorkerJobs = await Booking.find({
-        service: worker.service,
+        service: new RegExp(`^${worker.service}$`, "i"),
         removedByAdmin: { $ne: true },
       }).sort({ _id: -1 });
 
@@ -1742,8 +1759,14 @@ app.get("/bookings", authMiddleware, async (req, res) => {
 
         if (alreadyAssignedToWorker) return true;
         if (job.status !== "pending") return false;
-        if (!workerArea.allowed || !workerArea.serviceRadius) return false;
-        if (job.lat === null || job.lng === null) return false;
+
+        const workerHasCoords =
+          Number.isFinite(Number(worker.lat)) && Number.isFinite(Number(worker.lng));
+        const jobHasCoords =
+          Number.isFinite(Number(job.lat)) && Number.isFinite(Number(job.lng));
+
+        if (!workerHasCoords || !jobHasCoords) return true;
+        if (!workerArea.allowed || !workerArea.serviceRadius) return true;
 
         const distance = geolib.getDistance(
           { latitude: Number(worker.lat), longitude: Number(worker.lng) },
