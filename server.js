@@ -61,6 +61,12 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
+function fileToDataUrl(file) {
+  if (!file) return null;
+  const buffer = fs.readFileSync(file.path);
+  return `data:${file.mimetype};base64,${buffer.toString("base64")}`;
+}
+
 async function createEmailTransporter() {
   const [smtpIp] = await dns.promises.resolve4("smtp.gmail.com");
   console.log("Using Gmail SMTP IPv4:", smtpIp);
@@ -1182,8 +1188,7 @@ app.put(
         adminSubscriptionUPI = adminUpi;
         await setSetting("adminUpi", adminUpi);
       }
-      if (req.file)
-        await setSetting("qrCodeUrl", `/uploads/${req.file.filename}`);
+      if (req.file) await setSetting("qrCodeUrl", fileToDataUrl(req.file));
       res.json({ message: "Settings updated" });
     } catch (err) {
       console.log(err);
@@ -1229,7 +1234,7 @@ app.get("/worker/can-accept", authMiddleware, async (req, res) => {
     if (isSubActive) return res.json({ canAccept: true, reason: "premium" });
     const unpaid = await Commission.findOne({
       workerId: req.user.id,
-      status: "pending",
+      status: { $in: ["pending", "paid"] },
     });
     if (unpaid)
       return res.json({
@@ -1775,7 +1780,7 @@ app.post(
         service,
         location: req.body.location,
         phone: req.body.phone,
-        image: req.file ? req.file.filename : null,
+        image: req.file ? fileToDataUrl(req.file) : null,
         pricePerHour: price,
         urgency,
         finalPrice,
