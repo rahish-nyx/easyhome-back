@@ -1538,6 +1538,44 @@ app.put("/change-password", authMiddleware, async (req, res) => {
   }
 });
 
+app.put("/forgot-password", async (req, res) => {
+  try {
+    const { role, email, phone, newPassword } = req.body;
+    if (!role || !email || !phone || !newPassword) {
+      return res.status(400).json({
+        error: "Role, email, registered phone and new password required",
+      });
+    }
+    if (!["customer", "worker"].includes(role)) {
+      return res.status(400).json({ error: "Invalid account type" });
+    }
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: "Enter a valid email" });
+    }
+    if (!isValidPhone(phone)) {
+      return res.status(400).json({ error: "Enter a valid phone number" });
+    }
+    if (String(newPassword).length < 6) {
+      return res
+        .status(400)
+        .json({ error: "Password must be at least 6 characters" });
+    }
+
+    const Model = role === "customer" ? Customer : Worker;
+    const user = await Model.findOne({ email: String(email).trim() });
+    if (!user || normalizePhone(user.phone) !== normalizePhone(phone)) {
+      return res
+        .status(400)
+        .json({ error: "Email and registered phone do not match" });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    res.json({ message: "Password reset successful" });
+  } catch {
+    res.status(500).json({ error: "Server error" });
+  }
+});
 // ================= NOTIFICATIONS =================
 app.get("/notifications", authMiddleware, async (req, res) => {
   try {
