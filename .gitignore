@@ -21,6 +21,13 @@ dist-ssr
 *.ntvs*
 *.njsproj
 *.sln
-*.sw?
-*.env
+# Environment files
+.env
+.env.*
+.env.local
+!.env.example
+
+# Uploads and temporary files
+uploads/*
+!uploads/.gitkeep
 dist

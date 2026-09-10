@@ -16,9 +16,11 @@ const dns = require("dns");
 dns.setDefaultResultOrder("ipv4first");
 
 const app = express();
-console.log("MONGODB_URI:", process.env.MONGODB_URI);
 const server = http.createServer(app);
 const JWT_SECRET = process.env.JWT_SECRET || "easyhomes_secret_key";
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET === "easyhomes_secret_key") {
+  console.warn("⚠️ SECURITY WARNING: Using fallback JWT_SECRET. Please set a strong random JWT_SECRET in .env");
+}
 
 const allowedOrigins = [
   "https://easyhome-front.vercel.app",
@@ -81,7 +83,7 @@ async function createEmailTransporter() {
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
     tls: {
       servername: "smtp.gmail.com",
-      rejectUnauthorized: false,
+      rejectUnauthorized: true,
     },
   });
 }
@@ -98,6 +100,33 @@ if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
     )
     .catch((error) => console.log("Email config error:", error.message));
 }
+
+// ================= RATE LIMITING =================
+const rateLimitMap = new Map();
+function createRateLimiter({ windowMs = 15 * 60 * 1000, max = 30, message = "Too many requests, please try again later" } = {}) {
+  return (req, res, next) => {
+    const ip = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress || "global";
+    const now = Date.now();
+    const entry = rateLimitMap.get(ip) || { count: 0, resetTime: now + windowMs };
+
+    if (now > entry.resetTime) {
+      entry.count = 1;
+      entry.resetTime = now + windowMs;
+    } else {
+      entry.count++;
+    }
+
+    rateLimitMap.set(ip, entry);
+
+    if (entry.count > max) {
+      return res.status(429).json({ error: message });
+    }
+    next();
+  };
+}
+
+const authLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 20, message: "Too many login/auth attempts. Please wait 15 minutes." });
+const otpLimiter = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 6, message: "Too many OTP requests. Please wait 10 minutes." });
 
 const otpStore = {};
 let adminSubscriptionUPI = process.env.ADMIN_UPI || "admin@easyhome.upi";
@@ -330,11 +359,17 @@ io.on("connection", (socket) => {
 // ================= DEFAULT DATA =================
 async function createDefaultAdmin() {
   try {
-    const exists = await Admin.findOne({ email: "admin@example.com" });
+    const adminEmail = process.env.ADMIN_EMAIL;
+    const adminPassword = process.env.ADMIN_PASSWORD;
+    if (!adminEmail || !adminPassword) {
+      console.log("No ADMIN_EMAIL or ADMIN_PASSWORD set in .env — skipping default admin initialization");
+      return;
+    }
+    const exists = await Admin.findOne({ email: adminEmail.trim().toLowerCase() });
     if (!exists) {
-      const hashed = await bcrypt.hash("***REMOVED***", 10);
-      await Admin.create({ email: "admin@example.com", password: hashed });
-      console.log("Default admin created");
+      const hashed = await bcrypt.hash(adminPassword, 10);
+      await Admin.create({ email: adminEmail.trim().toLowerCase(), password: hashed });
+      console.log("Default admin created securely from environment variables");
     }
   } catch (err) {
     console.log("Admin init error:", err);
@@ -399,7 +434,7 @@ function isValidPhone(phone) {
 }
 
 // ================= AUTH ROUTES =================
-app.post("/customer/send-otp", async (req, res) => {
+app.post("/customer/send-otp", otpLimiter, async (req, res) => {
   try {
     const { forRegister } = req.body;
     const email = String(req.body.email || "").trim().toLowerCase();
@@ -419,13 +454,13 @@ app.post("/customer/send-otp", async (req, res) => {
       res.json({ message: "OTP sent" });
     } catch (mailErr) {
       console.log("OTP Email Error:", mailErr?.message || mailErr);
-      if (process.env.DEMO_OTP_FALLBACK !== "false") {
+      if (process.env.DEMO_OTP_FALLBACK === "true") {
         return res.json({
           message: "OTP generated for demo",
           demoOtp: otp,
         });
       }
-      res.status(500).json({ error: "Failed to send OTP." });
+      res.status(500).json({ error: "Failed to send OTP to your email. Please try again." });
     }
   } catch (err) {
     console.log("OTP Error:", err?.message || err);
@@ -489,7 +524,7 @@ app.post("/customer/register", async (req, res) => {
   }
 });
 
-app.post("/customer/login", async (req, res) => {
+app.post("/customer/login", authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     const customer = await Customer.findOne({ email });
@@ -547,7 +582,7 @@ app.post("/worker/register", async (req, res) => {
   }
 });
 
-app.post("/worker/login", async (req, res) => {
+app.post("/worker/login", authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     const worker = await Worker.findOne({ email });
@@ -572,7 +607,7 @@ app.post("/worker/login", async (req, res) => {
   }
 });
 
-app.post("/admin/login", async (req, res) => {
+app.post("/admin/login", authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     const admin = await Admin.findOne({ email });
@@ -1538,12 +1573,43 @@ app.put("/change-password", authMiddleware, async (req, res) => {
   }
 });
 
-app.put("/forgot-password", async (req, res) => {
+app.post("/forgot-password/send-otp", otpLimiter, async (req, res) => {
   try {
-    const { role, email, phone, newPassword } = req.body;
-    if (!role || !email || !phone || !newPassword) {
+    const { role } = req.body;
+    const email = String(req.body.email || "").trim().toLowerCase();
+    if (!email || !role) return res.status(400).json({ error: "Email and role required" });
+    if (!["customer", "worker"].includes(role)) {
+      return res.status(400).json({ error: "Invalid account type" });
+    }
+    const Model = role === "customer" ? Customer : Worker;
+    const user = await Model.findOne({ email });
+    if (!user) return res.status(400).json({ error: "No account found with this email" });
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    otpStore[`reset_${email}`] = { otp, expires: Date.now() + 10 * 60 * 1000 };
+
+    try {
+      await sendOtpEmail(email, otp);
+      res.json({ message: "Password reset OTP sent to your registered email" });
+    } catch (mailErr) {
+      console.log("Reset OTP Email Error:", mailErr?.message || mailErr);
+      if (process.env.DEMO_OTP_FALLBACK === "true") {
+        return res.json({ message: "Demo reset OTP generated", demoOtp: otp });
+      }
+      res.status(500).json({ error: "Failed to send reset OTP email" });
+    }
+  } catch {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.put("/forgot-password", authLimiter, async (req, res) => {
+  try {
+    const { role, newPassword, otp } = req.body;
+    const email = String(req.body.email || "").trim().toLowerCase();
+    if (!role || !email || !newPassword) {
       return res.status(400).json({
-        error: "Role, email, registered phone and new password required",
+        error: "Role, email, and new password required",
       });
     }
     if (!["customer", "worker"].includes(role)) {
@@ -1552,9 +1618,6 @@ app.put("/forgot-password", async (req, res) => {
     if (!isValidEmail(email)) {
       return res.status(400).json({ error: "Enter a valid email" });
     }
-    if (!isValidPhone(phone)) {
-      return res.status(400).json({ error: "Enter a valid phone number" });
-    }
     if (String(newPassword).length < 6) {
       return res
         .status(400)
@@ -1562,11 +1625,41 @@ app.put("/forgot-password", async (req, res) => {
     }
 
     const Model = role === "customer" ? Customer : Worker;
-    const user = await Model.findOne({ email: String(email).trim() });
-    if (!user || normalizePhone(user.phone) !== normalizePhone(phone)) {
-      return res
-        .status(400)
-        .json({ error: "Email and registered phone do not match" });
+    const user = await Model.findOne({ email });
+    if (!user) {
+      return res.status(400).json({ error: "User not found" });
+    }
+
+    const token = req.headers.authorization?.split(" ")[1];
+    let isAuthorized = false;
+
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        if (decoded.id === user._id.toString()) {
+          isAuthorized = true;
+        }
+      } catch {
+        // invalid token
+      }
+    }
+
+    if (!isAuthorized) {
+      if (!otp) {
+        return res.status(400).json({ error: "Verification OTP required to reset password" });
+      }
+      const stored = otpStore[`reset_${email}`];
+      if (!stored) {
+        return res.status(400).json({ error: "OTP not requested or expired. Request a new OTP." });
+      }
+      if (Date.now() > stored.expires) {
+        delete otpStore[`reset_${email}`];
+        return res.status(400).json({ error: "OTP has expired. Request a new one." });
+      }
+      if (stored.otp !== String(otp).trim()) {
+        return res.status(400).json({ error: "Invalid OTP code" });
+      }
+      delete otpStore[`reset_${email}`];
     }
 
     user.password = await bcrypt.hash(newPassword, 10);
@@ -1765,12 +1858,15 @@ app.get("/normal-jobs", async (req, res) => {
     const ago = new Date();
     ago.setMonth(ago.getMonth() - 1);
     res.json(
-      await Booking.find({
-        urgency: "normal",
-        status: "pending",
-        removedByAdmin: { $ne: true },
-        createdAt: { $gte: ago },
-      })
+      await Booking.find(
+        {
+          urgency: "normal",
+          status: "pending",
+          removedByAdmin: { $ne: true },
+          createdAt: { $gte: ago },
+        },
+        "_id service description location finalPrice pricePerHour urgency status createdAt",
+      )
         .sort({ createdAt: -1 })
         .limit(20),
     );
@@ -1888,11 +1984,18 @@ app.post(
 
 app.put("/booking/:id", authMiddleware, async (req, res) => {
   try {
-    const updated = await Booking.findByIdAndUpdate(
-      req.params.id,
-      { status: "accepted", worker: req.user.name, workerId: req.user.id },
-      { new: true },
-    );
+    if (req.user.role !== "worker") {
+      return res.status(403).json({ error: "Only registered workers can accept jobs" });
+    }
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.status !== "pending") {
+      return res.status(400).json({ error: "Booking is no longer available" });
+    }
+    booking.status = "accepted";
+    booking.worker = req.user.name;
+    booking.workerId = req.user.id;
+    const updated = await booking.save();
     await Worker.findByIdAndUpdate(req.user.id, { $inc: { jobs: 1 } });
     res.json(updated);
   } catch {
@@ -1901,26 +2004,26 @@ app.put("/booking/:id", authMiddleware, async (req, res) => {
 });
 app.put("/booking/:id/start", authMiddleware, async (req, res) => {
   try {
-    res.json(
-      await Booking.findByIdAndUpdate(
-        req.params.id,
-        { status: "ongoing" },
-        { new: true },
-      ),
-    );
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (req.user.role !== "admin" && booking.workerId !== req.user.id) {
+      return res.status(403).json({ error: "Unauthorized: only assigned worker can start this job" });
+    }
+    booking.status = "ongoing";
+    res.json(await booking.save());
   } catch {
     res.status(500).json({ error: "Failed" });
   }
 });
 app.put("/booking/:id/complete", authMiddleware, async (req, res) => {
   try {
-    res.json(
-      await Booking.findByIdAndUpdate(
-        req.params.id,
-        { status: "completed" },
-        { new: true },
-      ),
-    );
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (req.user.role !== "admin" && booking.workerId !== req.user.id) {
+      return res.status(403).json({ error: "Unauthorized: only assigned worker can complete this job" });
+    }
+    booking.status = "completed";
+    res.json(await booking.save());
   } catch {
     res.status(500).json({ error: "Failed" });
   }
@@ -1928,12 +2031,15 @@ app.put("/booking/:id/complete", authMiddleware, async (req, res) => {
 app.put("/booking/:id/payment", authMiddleware, async (req, res) => {
   try {
     const { paymentMode } = req.body;
-    const booking = await Booking.findByIdAndUpdate(
-      req.params.id,
-      { paymentDone: true, paymentMode },
-      { new: true },
-    );
-    if (req.user.role === "worker" && booking.commission > 0) {
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (req.user.role !== "admin" && booking.customerId !== req.user.id && booking.workerId !== req.user.id) {
+      return res.status(403).json({ error: "Unauthorized: not your booking" });
+    }
+    booking.paymentDone = true;
+    booking.paymentMode = paymentMode;
+    const updated = await booking.save();
+    if (req.user.role === "worker" && updated.commission > 0) {
       const worker = await Worker.findById(req.user.id);
       const isSubActive =
         worker?.isSubscribed && worker?.subscriptionEnd > new Date();
@@ -1944,14 +2050,14 @@ app.put("/booking/:id/payment", authMiddleware, async (req, res) => {
             workerId: req.user.id,
             workerName: req.user.name,
             bookingId: req.params.id,
-            amount: booking.commission,
+            amount: updated.commission,
             status: "pending",
           },
           { upsert: true, new: true },
         );
       }
     }
-    res.json(booking);
+    res.json(updated);
   } catch {
     res.status(500).json({ error: "Failed" });
   }
