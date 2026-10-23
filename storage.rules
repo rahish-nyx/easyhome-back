@@ -1,0 +1,12 @@
+rules_version = '2';
+
+// Storage is private by default. All uploads go through the Express API
+// (Admin SDK). Public images are streamed by /api/media; KYC documents are
+// only streamed to authenticated admins.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

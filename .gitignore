@@ -27,6 +27,11 @@ dist-ssr
 .env.local
 !.env.example
 
+# Firebase service account keys
+serviceAccount.json
+*firebase-adminsdk*.json
+*-firebase-adminsdk-*.json
+
 # Uploads and temporary files
 uploads/*
 !uploads/.gitkeep
