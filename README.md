@@ -199,10 +199,12 @@ All routes are prefixed by `/api`.
 
 1. Link billing and enable Authentication + Storage in the Firebase console.
 2. Set a strong `ADMIN_PASSWORD`, then run `npm run seed`.
-3. `npx firebase-tools login`.
-4. Deploy rules and indexes: `npx firebase-tools deploy --only firestore:rules,firestore:indexes,storage`.
-5. Build the frontend, then deploy hosting.
-6. Smoke test `/health`, `/api/public/bootstrap`, sign-in, booking creation, worker approval and admin dashboard.
+3. Deploy this Express API to a Node host (Render, Railway, Fly.io, Cloud Run) or wrap it as a Firebase Cloud Function with an `/api/**` Hosting rewrite. Firebase Hosting alone cannot run Express.
+4. Add the Hosting origin to `CORS_ORIGINS`, and set `VITE_API_URL` in the frontend build to the API base **including `/api`**.
+5. `npx firebase-tools login`.
+6. Deploy rules and indexes: `npx firebase-tools deploy --only firestore:rules,firestore:indexes,storage`.
+7. Build the frontend, then deploy hosting.
+8. Smoke test `/health`, `/api/public/bootstrap`, sign-in, booking creation, worker approval and admin dashboard.
 
 ## Troubleshooting
 
