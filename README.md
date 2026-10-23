@@ -59,7 +59,7 @@ After Authentication is enabled:
 npm run seed
 ```
 
-The seed writes the service catalogue, cities, sample promos, `settings/app`, and the admin account named by `ADMIN_EMAIL`. Set a long, unique `ADMIN_PASSWORD` in `.env` **before** running it in production. The seed is idempotent for catalogue documents and does not overwrite an existing admin password.
+The seed writes the service catalogue, cities, sample promos, `settings/app`, and the admin account named by `ADMIN_EMAIL`. Set a unique `ADMIN_PASSWORD` of at least 12 characters in `.env` **before** running it in production; the seed skips the admin account when the password is missing or too short. The seed is idempotent for catalogue documents and does not overwrite an existing admin password.
 
 ## Run
 

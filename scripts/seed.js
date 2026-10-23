@@ -137,8 +137,8 @@ async function seedAdmin() {
     console.log("⚠  ADMIN_EMAIL / ADMIN_PASSWORD not set — skipping admin account.");
     return;
   }
-  if (env.adminPassword.length < 8) {
-    console.log("⚠  ADMIN_PASSWORD must be at least 8 characters — skipping admin account.");
+  if (env.adminPassword.length < 12) {
+    console.log("⚠  ADMIN_PASSWORD must be at least 12 characters — skipping admin account.");
     return;
   }
 
