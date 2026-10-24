@@ -19,9 +19,13 @@ import {
   premiumActive,
 } from "../lib/booking.js";
 import { distanceMeters, hasCoords } from "../lib/geo.js";
-import { uploadImage } from "../lib/media.js";
 import { notify, notifyAdmins, sendMail, emailLayout } from "../lib/notify.js";
-import { commissionTelegramMessage, sendTelegramAlert } from "../lib/telegram.js";
+import {
+  commissionTelegramMessage,
+  isTelegramConfigured,
+  sendTelegramAlert,
+  sendTelegramDocument,
+} from "../lib/telegram.js";
 import {
   PHASE_META,
   TRACKING_PHASES,
@@ -800,19 +804,66 @@ workerRouter.post(
   requireAuth,
   upload.single("image"),
   asyncHandler(async (req, res) => {
-    if (!req.file) throw new ApiError(400, "Upload a government ID image.", "FILE_REQUIRED");
+    if (!req.file) {
+      throw new ApiError(400, "Upload a government ID image.", "FILE_REQUIRED");
+    }
+    if (!isTelegramConfigured()) {
+      throw new ApiError(
+        503,
+        "ID verification is temporarily unavailable. Please try again shortly or contact support.",
+        "KYC_DELIVERY_UNAVAILABLE",
+        undefined,
+        true,
+      );
+    }
+
     const workerSnap = await collections.workers.doc(req.user.uid).get();
     if (!workerSnap.exists) {
-      throw new ApiError(404, "Worker profile not found. Apply as a worker first.", "WORKER_NOT_FOUND");
+      throw new ApiError(
+        404,
+        "Worker profile not found. Apply as a worker first.",
+        "WORKER_NOT_FOUND",
+      );
     }
-    const objectPath = await uploadImage(req.file.buffer, {
-      folder: "kyc",
-      isPublic: false,
+
+    const worker = workerSnap.data() || {};
+    const workerName = worker.name || req.user.name || "Worker";
+    const caption = [
+      "EasyHome identity verification",
+      `Worker: ${workerName}`,
+      `Email: ${req.user.email || worker.email || "not provided"}`,
+      `Worker ID: ${req.user.uid}`,
+      `File: ${req.file.originalname || "government-id"}`,
+    ].join("\n");
+
+    const delivery = await sendTelegramDocument(req.file.buffer, {
+      filename: req.file.originalname || `kyc-${req.user.uid}.jpg`,
+      contentType: req.file.mimetype || "image/jpeg",
+      caption,
     });
+
+    if (!delivery.ok || !delivery.fileId) {
+      throw new ApiError(
+        502,
+        "We couldn't send your ID to our verification team. Please try again.",
+        "KYC_DELIVERY_FAILED",
+        undefined,
+        true,
+      );
+    }
 
     await collections.workers.doc(req.user.uid).set(
       {
-        kycPath: objectPath,
+        // Clear legacy Firebase Storage references: new KYC files live in
+        // Telegram only and are streamed back to admins through the API.
+        kycPath: "",
+        kycDelivery: "telegram",
+        kycTelegramFileId: delivery.fileId || "",
+        kycTelegramFileUniqueId: delivery.fileUniqueId || "",
+        kycTelegramMessageId: delivery.messageId || null,
+        kycTelegramChatId: delivery.chatId || "",
+        kycTelegramFileName: delivery.fileName || "",
+        kycTelegramMimeType: delivery.mimeType || "",
         kycStatus: "pending",
         kycSubmittedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
@@ -822,12 +873,12 @@ workerRouter.post(
 
     await notifyAdmins({
       title: "KYC submitted",
-      body: `${req.user.name || "A worker"} uploaded an ID for verification.`,
+      body: `${workerName} uploaded an ID for verification in Telegram.`,
       type: "kyc",
       link: "/admin/approvals",
     });
 
-    res.json({ ok: true, status: "pending" });
+    res.json({ ok: true, status: "pending", delivery: "telegram" });
   }),
 );
 

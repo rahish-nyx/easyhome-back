@@ -79,14 +79,15 @@ Health check: `GET /health` -> `{ ok: true, service: "easyhome-api", version: 2 
 | `CORS_ORIGINS` | Comma-separated allowed web origins |
 | `PUBLIC_WEB_URL` | Links used in emails and notifications |
 | `FIREBASE_*` / `GOOGLE_APPLICATION_CREDENTIALS` | Admin credentials |
-| `FIREBASE_STORAGE_BUCKET` | Media/KYC bucket |
+| `FIREBASE_STORAGE_BUCKET` | Optional legacy media bucket (existing objects only) |
+| `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Public image uploads (bookings, avatars, promos) |
 | `RESEND_API_KEY`, `MAIL_FROM` | Optional transactional email |
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME` | First admin seed |
 | `DEFAULT_COMMISSION_PCT`, `DEFAULT_SUBSCRIPTION_PRICE` | Business defaults |
 | `PAYMENT_PROVIDER` | `razorpay` (automated checkout + webhook) |
 | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | Razorpay API credentials |
 | `RAZORPAY_WEBHOOK_SECRET` | HMAC secret for `/api/payment/webhook` |
-| `TELEGRAM_BOT_TOKEN`, `ADMIN_TELEGRAM_CHAT_ID` | Optional admin payment alerts |
+| `TELEGRAM_BOT_TOKEN`, `ADMIN_TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_ID` | Admin alerts and private KYC document delivery |
 
 `FIRESTORE_EMULATOR_HOST`, `FIREBASE_AUTH_EMULATOR_HOST` and `FIREBASE_STORAGE_EMULATOR_HOST` switch the API to the emulator suite without a service account.
 
@@ -107,7 +108,7 @@ Health check: `GET /health` -> `{ ok: true, service: "easyhome-api", version: 2 
 | Collection | Purpose |
 | --- | --- |
 | `users/{uid}` | Customer/admin profile, role, premium state |
-| `workers/{uid}` | Private worker profile, trades, availability, earnings, KYC paths |
+| `workers/{uid}` | Private worker profile, trades, availability, earnings, KYC Telegram references |
 | `workersPublic/{uid}` | Safe public worker directory |
 | `services/{id}`, `cities/{id}`, `promos/{id}` | Admin-managed catalogue |
 | `bookings/{id}` | Booking lifecycle, pricing, assignment, status |
@@ -197,10 +198,12 @@ All routes are prefixed by `/api`.
 
 ## Media
 
-- Public images are uploaded to Storage and served through `GET /api/media/:path`.
-- KYC images use a separate private folder and are only exposed by the admin KYC route.
+- Public images are uploaded to Cloudinary through Multer memory uploads and the returned `secure_url` is stored in Firestore.
+- Existing Firebase Storage object paths are still readable through `GET /api/media/:path` for legacy records.
+- KYC images are never written to app storage. They are sent directly to the admin Telegram chat with `sendDocument`; only the Telegram file/message reference is stored in Firestore.
+- The admin KYC route streams the Telegram file back through the API, so the bot token never reaches the browser.
 - Uploads are size/type limited by Multer and validated server-side.
-- If the Storage bucket is missing, uploads fail cleanly instead of silently writing to the repository.
+- Missing Cloudinary or Telegram configuration returns a clear `503`; provider failures return a clear `502` without breaking Firestore or Razorpay flows.
 
 ## Email and payments
 
@@ -212,14 +215,15 @@ All routes are prefixed by `/api`.
 
 ## Deploy checklist
 
-1. Link billing and enable Authentication + Storage in the Firebase console.
-2. Set a strong `ADMIN_PASSWORD`, then run `npm run seed`.
-3. Deploy this Express API to a Node host (Render, Railway, Fly.io, Cloud Run) or wrap it as a Firebase Cloud Function with an `/api/**` Hosting rewrite. Firebase Hosting alone cannot run Express.
-4. Add the Hosting origin to `CORS_ORIGINS`, and set `VITE_API_URL` in the frontend build to the API base **including `/api`**.
-5. `npx firebase-tools login`.
-6. Deploy rules and indexes: `npx firebase-tools deploy --only firestore:rules,firestore:indexes,storage`.
-7. Build the frontend, then deploy hosting.
-8. Smoke test `/health`, `/api/public/bootstrap`, sign-in, booking creation, worker approval and admin dashboard.
+1. Link billing and enable Authentication in the Firebase console. Storage is only needed for reading legacy media records.
+2. Add `CLOUDINARY_*` and `TELEGRAM_*` values to the API environment.
+3. Set a strong `ADMIN_PASSWORD`, then run `npm run seed`.
+4. Deploy this Express API to a Node host (Render, Railway, Fly.io, Cloud Run) or wrap it as a Firebase Cloud Function with an `/api/**` Hosting rewrite. Firebase Hosting alone cannot run Express.
+5. Add the Hosting origin to `CORS_ORIGINS`, and set `VITE_API_URL` in the frontend build to the API base **including `/api`**.
+6. `npx firebase-tools login`.
+7. Deploy rules and indexes: `npx firebase-tools deploy --only firestore:rules,firestore:indexes,storage`.
+8. Build the frontend, then deploy hosting.
+9. Smoke test `/health`, `/api/public/bootstrap`, sign-in, booking creation, worker approval and admin dashboard.
 
 ## Troubleshooting
 
@@ -227,7 +231,8 @@ All routes are prefixed by `/api`.
 | --- | --- |
 | `CONFIGURATION_NOT_FOUND` on sign-in | Authentication is not enabled, or billing is not linked for Identity Platform. |
 | `BILLING_NOT_ENABLED` | Link a billing account to the Google Cloud project. |
-| Storage upload 403/404 | Create the default Storage bucket and verify the service account. |
+| `MEDIA_NOT_CONFIGURED` / `MEDIA_UPLOAD_FAILED` | Check `CLOUDINARY_*` credentials in the API environment. Public uploads no longer use Firebase Storage. |
+| `KYC_DELIVERY_UNAVAILABLE` / `KYC_DELIVERY_FAILED` | Check `TELEGRAM_BOT_TOKEN` and the admin chat ID, and make sure the admin has started the bot. |
 | `firebaserules.releases.create` denied | The service account cannot deploy rules. Use `npx firebase-tools login` with an owner account, or grant Firebase Rules Admin. |
 | `query requires an index` | Deploy `firestore.indexes.json` with the Firebase CLI. |
 | Public catalogue is empty | Firestore rules are still deny-all; deploy them. |

@@ -5,6 +5,7 @@ import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { streamPrivateObject } from "../lib/media.js";
 import { emailLayout, notify, sendMail } from "../lib/notify.js";
+import { fetchTelegramDocument } from "../lib/telegram.js";
 import { approveWorker, syncPublicWorker } from "../lib/workers.js";
 import {
   appSettings,
@@ -339,9 +340,46 @@ adminRouter.get(
   asyncHandler(async (req, res) => {
     const snap = await collections.workers.doc(req.params.id).get();
     if (!snap.exists) throw new ApiError(404, "Worker not found.", "NOT_FOUND");
-    const { kycPath } = snap.data();
-    if (!kycPath) throw new ApiError(404, "No KYC document uploaded.", "KYC_MISSING");
-    await streamPrivateObject(kycPath, res);
+
+    const {
+      kycPath,
+      kycTelegramFileId,
+      kycTelegramMimeType,
+      kycTelegramFileName,
+    } = snap.data();
+
+    if (kycTelegramFileId) {
+      const document = await fetchTelegramDocument(kycTelegramFileId);
+      if (!document.ok) {
+        throw new ApiError(
+          502,
+          "This ID could not be loaded from Telegram. Please check the admin chat or try again.",
+          "KYC_DOWNLOAD_FAILED",
+          undefined,
+          true,
+        );
+      }
+
+      const safeName =
+        String(kycTelegramFileName || document.name || "kyc-document")
+          .replace(/[^a-z0-9._-]+/gi, "_")
+          .replace(/^_+|_+$/g, "") || "kyc-document";
+      const contentType =
+        kycTelegramMimeType ||
+        (document.contentType && document.contentType !== "application/octet-stream"
+          ? document.contentType
+          : "application/octet-stream");
+
+      res.set("Content-Type", contentType);
+      res.set("Cache-Control", "private, no-store");
+      res.set("Content-Disposition", `inline; filename="${safeName}"`);
+      return res.send(document.buffer);
+    }
+
+    if (!kycPath) {
+      throw new ApiError(404, "No KYC document uploaded.", "KYC_MISSING");
+    }
+    return streamPrivateObject(kycPath, res);
   }),
 );
 

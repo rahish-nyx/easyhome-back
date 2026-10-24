@@ -2,11 +2,14 @@ import { ZodError } from "zod";
 import { env } from "../config/env.js";
 
 export class ApiError extends Error {
-  constructor(status, message, code = "ERROR", details = undefined) {
+  constructor(status, message, code = "ERROR", details = undefined, expose = false) {
     super(message);
     this.status = status;
     this.code = code;
     this.details = details;
+    // Operational failures (storage, Telegram, payment provider) are safe to
+    // show to the client even in production. Unexpected 5xx errors stay masked.
+    this.expose = expose;
   }
 }
 
@@ -55,7 +58,7 @@ export function errorHandler(err, req, res, _next) {
 
   res.status(status).json({
     error:
-      status >= 500 && env.isProd
+      status >= 500 && env.isProd && !err.expose
         ? "Something went wrong on our side. Please try again."
         : err.message || "Something went wrong",
     code: err.code || (status >= 500 ? "INTERNAL" : "REQUEST_ERROR"),

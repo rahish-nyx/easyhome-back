@@ -1,5 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { bucket } from "../config/firebase.js";
+import {
+  cloudinary,
+  configureCloudinary,
+} from "../config/cloudinary.js";
 import { ApiError } from "../middleware/errors.js";
 
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -56,29 +59,82 @@ function inspectImage(buffer) {
 }
 
 /**
- * Uploads an image to Firebase Storage.
- * Public assets live under `public/…` and are served through /api/media.
- * Private assets (KYC documents) live under `private/…` and are admin-only.
+ * Uploads a public image to Cloudinary and returns its secure URL.
+ *
+ * New uploads deliberately do not touch Firebase Storage. Existing Firebase
+ * object paths remain readable through streamObject()/the /api/media proxy.
+ * Private KYC documents are sent to Telegram instead (see lib/telegram.js).
  */
-export async function uploadImage(buffer, { folder, isPublic = true }) {
-  const { ext, contentType } = inspectImage(buffer);
-  const safeFolder = String(folder || "misc").replace(/[^a-z0-9/_-]/gi, "");
-  const objectPath = `${isPublic ? "public" : "private"}/${safeFolder}/${Date.now()}-${randomUUID()}.${ext}`;
-  const file = bucket.file(objectPath);
+export async function uploadImage(buffer, { folder, isPublic = true } = {}) {
+  if (!isPublic) {
+    throw new ApiError(
+      400,
+      "Private documents must be sent to the verification team, not stored as media.",
+      "PRIVATE_UPLOAD_DISABLED",
+      undefined,
+      true,
+    );
+  }
 
-  await file.save(buffer, {
-    contentType,
-    resumable: false,
-    validation: "crc32c",
-    metadata: {
-      cacheControl: isPublic
-        ? "public, max-age=31536000, immutable"
-        : "private, no-store",
-      metadata: { uploadedBy: "easyhome-api" },
-    },
-  });
+  inspectImage(buffer);
 
-  return objectPath;
+  if (!configureCloudinary()) {
+    throw new ApiError(
+      503,
+      "Photo uploads are temporarily unavailable. Please try again shortly.",
+      "MEDIA_NOT_CONFIGURED",
+      undefined,
+      true,
+    );
+  }
+
+  const safeFolder =
+    String(folder || "misc")
+      .replace(/[^a-z0-9/_-]/gi, "")
+      .replace(/^\/+|\/+$/g, "") || "misc";
+
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder: `easyhome/${safeFolder}`,
+          resource_type: "image",
+          unique_filename: true,
+          overwrite: false,
+        },
+        (error, uploaded) => {
+          if (error) reject(error);
+          else resolve(uploaded);
+        },
+      );
+      stream.end(buffer);
+    });
+
+    if (!result?.secure_url) {
+      throw new Error("Cloudinary did not return a secure URL.");
+    }
+
+    return result.secure_url;
+  } catch (error) {
+    console.warn(
+      "Cloudinary upload failed:",
+      sanitizeProviderError(error?.message || error),
+    );
+    throw new ApiError(
+      502,
+      "We couldn't upload that photo right now. Please try again.",
+      "MEDIA_UPLOAD_FAILED",
+      undefined,
+      true,
+    );
+  }
+}
+
+function sanitizeProviderError(value) {
+  return String(value || "")
+    .replace(/api_secret=[^&\s]+/gi, "api_secret=<redacted>")
+    .replace(/api_key=[^&\s]+/gi, "api_key=<redacted>")
+    .slice(0, 240);
 }
 
 export async function streamObject(objectPath, res, { cache = true } = {}) {

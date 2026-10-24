@@ -121,7 +121,21 @@ app.get(
 );
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "easyhome-api", version: 2, time: new Date().toISOString() });
+  res.json({
+    ok: true,
+    service: "easyhome-api",
+    version: 2,
+    time: new Date().toISOString(),
+    config: {
+      firebase: Boolean(env.projectId && (env.serviceAccountJson || env.clientEmail)),
+      cloudinary: Boolean(
+        env.cloudinaryCloudName && env.cloudinaryApiKey && env.cloudinaryApiSecret,
+      ),
+      telegram: Boolean(env.telegramBotToken && env.adminTelegramChatId),
+      razorpay: Boolean(env.razorpayKeyId && env.razorpayKeySecret),
+    },
+    media: { publicImages: "cloudinary", kycDocuments: "telegram" },
+  });
 });
 
 app.use("/api/public", publicRouter);

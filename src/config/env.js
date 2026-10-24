@@ -87,6 +87,10 @@ export const env = {
   razorpayWebhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET || "",
   trustProxy: Number(process.env.TRUST_PROXY || 1),
   enableDemoData: asBool(process.env.ENABLE_DEMO_DATA, false),
+  cloudinaryCloudName: process.env.CLOUDINARY_CLOUD_NAME || "",
+  cloudinaryApiKey: process.env.CLOUDINARY_API_KEY || "",
+  cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET || "",
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || "",
-  adminTelegramChatId: process.env.ADMIN_TELEGRAM_CHAT_ID || "",
+  adminTelegramChatId:
+    process.env.ADMIN_TELEGRAM_CHAT_ID || process.env.TELEGRAM_CHAT_ID || "",
 };
