@@ -465,7 +465,12 @@ adminRouter.patch(
         });
         batch.set(
           collections.workers.doc(booking.workerId),
-          { dues: FieldValue.increment(commission), updatedAt: FieldValue.serverTimestamp() },
+          {
+            dues: FieldValue.increment(commission),
+            dueCommissionAmount: FieldValue.increment(commission),
+            hasPendingCommission: true,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
           { merge: true },
         );
       }

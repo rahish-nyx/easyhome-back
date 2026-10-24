@@ -17,6 +17,14 @@ import { appSettings, commissionFor, premiumActive } from "../lib/booking.js";
 import { nearestServiceArea } from "../lib/geo.js";
 import { uploadImage } from "../lib/media.js";
 import { notify, notifyAdmins } from "../lib/notify.js";
+import { sendTelegramAlert, subscriptionTelegramMessage } from "../lib/telegram.js";
+import { OUT_OF_ZONE_MESSAGE, validateBookingZone } from "../lib/zones.js";
+import {
+  PHASE_META,
+  phaseHistoryEntry,
+  trackingEta,
+  trackingSnapshot,
+} from "../lib/tracking.js";
 import { docToJson, docsToJson, normalizePhone } from "../lib/utils.js";
 
 export const customerRouter = Router();
@@ -72,20 +80,41 @@ customerRouter.post(
       );
     }
 
-    const citiesSnap = await collections.cities.where("active", "==", true).get();
-    const cities = docsToJson(citiesSnap);
     const hasCoords =
       Number.isFinite(Number(body.lat)) && Number.isFinite(Number(body.lng));
 
-    if (hasCoords && cities.length > 0) {
-      const area = nearestServiceArea(cities, body.lat, body.lng);
-      if (!area.allowed) {
-        throw new ApiError(
-          403,
-          `We are not serving this area yet. Nearest hub: ${area.nearest?.city?.name || "—"}.`,
-          "OUT_OF_SERVICE_AREA",
-          { nearestCity: area.nearest?.city?.name || null },
-        );
+    // Admin-managed service zones are authoritative. If no zones have been
+    // configured yet, fall back to the original city-radius coverage model.
+    const zoneCheck = await validateBookingZone({
+      lat: hasCoords ? Number(body.lat) : null,
+      lng: hasCoords ? Number(body.lng) : null,
+      cityName: body.city,
+      state: body.state,
+    });
+
+    if (!zoneCheck.allowed) {
+      throw new ApiError(403, OUT_OF_ZONE_MESSAGE, "OUT_OF_SERVICE_AREA", {
+        zoneMessage: OUT_OF_ZONE_MESSAGE,
+        nearestZone: zoneCheck.nearest?.zone?.cityName || null,
+        nearestDistanceMeters: zoneCheck.nearest?.distanceMeters ?? null,
+        waitlistAvailable: true,
+      });
+    }
+
+    if (!zoneCheck.configured) {
+      const citiesSnap = await collections.cities.where("active", "==", true).get();
+      const cities = docsToJson(citiesSnap);
+
+      if (hasCoords && cities.length > 0) {
+        const area = nearestServiceArea(cities, body.lat, body.lng);
+        if (!area.allowed) {
+          throw new ApiError(403, OUT_OF_ZONE_MESSAGE, "OUT_OF_SERVICE_AREA", {
+            zoneMessage: OUT_OF_ZONE_MESSAGE,
+            nearestZone: area.nearest?.city?.name || null,
+            nearestDistanceMeters: area.nearest?.distanceMeters ?? null,
+            waitlistAvailable: true,
+          });
+        }
       }
     }
 
@@ -120,9 +149,36 @@ customerRouter.post(
         label: body.addressLabel || "",
         verified: hasCoords,
       },
+      cityName: body.city || zoneCheck.zone?.cityName || "",
+      stateName: body.state || zoneCheck.zone?.state || "",
+      serviceZoneId: zoneCheck.zone?.id || null,
+      serviceZoneName: zoneCheck.zone?.cityName || null,
       budget: Math.round(body.budget),
       urgency: body.urgency,
       status: "pending",
+      activeJob: false,
+      trackingPhase: null,
+      currentLat: null,
+      currentLng: null,
+      currentAccuracy: null,
+      lastLocationAt: null,
+      lastUpdatedTimestamp: now,
+      trackingStatusUpdatedAt: now,
+      trackingAlert: false,
+      trackingNudgeCount: 0,
+      statusHistory: [
+        {
+          phase: "requested",
+          status: "pending",
+          label: "Requested",
+          actorId: uid,
+          actorRole: "customer",
+          lat: hasCoords ? Number(body.lat) : null,
+          lng: hasCoords ? Number(body.lng) : null,
+          note: "",
+          at: Timestamp.now(),
+        },
+      ],
       imagePath,
       preferredWorkerId: body.preferredWorkerId || "",
       pricing: {
@@ -352,10 +408,22 @@ customerRouter.patch(
       }
       tx.update(ref, {
         status: "cancelled",
+        activeJob: false,
+        trackingAlert: false,
         cancelReason: reason || "Cancelled by customer",
         cancelledAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
+        lastUpdatedTimestamp: FieldValue.serverTimestamp(),
         "pricing.finalPrice": null,
+        statusHistory: FieldValue.arrayUnion({
+          phase: "cancelled",
+          status: "cancelled",
+          label: "Cancelled by customer",
+          actorId: req.user.uid,
+          actorRole: "customer",
+          note: String(reason || "").slice(0, 240),
+          at: Timestamp.now(),
+        }),
       });
       tx.set(
         collections.jobFeed.doc(ref.id),
@@ -440,6 +508,8 @@ customerRouter.patch(
         });
         tx.update(workerRef, {
           dues: FieldValue.increment(commission),
+          dueCommissionAmount: FieldValue.increment(commission),
+          hasPendingCommission: true,
           updatedAt: FieldValue.serverTimestamp(),
         });
       }
@@ -542,9 +612,25 @@ customerRouter.post(
   "/subscriptions",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const { plan, note } = subscriptionRequestSchema.parse(req.body || {});
+    throw new ApiError(
+      410,
+      "Manual UTR payments are disabled. Use the Razorpay checkout.",
+      "MANUAL_PAYMENT_DISABLED",
+    );
+    // Legacy manual flow retained below only as historical reference.
+    const { plan, note, utrId } = subscriptionRequestSchema.parse(req.body || {});
     const settings = await appSettings();
     const uid = req.user.uid;
+    const reference = String(utrId || note || "")
+      .replace(/\s+/g, "")
+      .toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9._-]{5,63}$/.test(reference)) {
+      throw new ApiError(
+        422,
+        "Enter a valid UTR / transaction reference from your payment app.",
+        "UTR_REQUIRED",
+      );
+    }
 
     const userRef = collections.users.doc(uid);
     const userSnap = await userRef.get();
@@ -577,7 +663,8 @@ customerRouter.post(
       months: planMonths(plan),
       amount,
       status: "pending",
-      paymentNote: note || "",
+      utrId: reference,
+      paymentNote: reference,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
       startAt: null,
@@ -592,6 +679,7 @@ customerRouter.post(
           status: "pending",
           plan,
           amount,
+          utrId: reference,
           requestedAt: FieldValue.serverTimestamp(),
         },
         updatedAt: FieldValue.serverTimestamp(),
@@ -601,10 +689,23 @@ customerRouter.post(
 
     await notifyAdmins({
       title: "Membership payment submitted",
-      body: `${user.name} requested the ${plan} plan (₹${amount}). Verify the UPI reference.`,
+      body: `${user.name} requested the ${plan} plan (₹${amount}). Verify UTR ${reference}.`,
       type: "subscription",
       link: "/admin/revenue",
     });
+
+    await sendTelegramAlert(
+      subscriptionTelegramMessage({
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        planLabel: plan,
+        months: planMonths(plan),
+        amount,
+        utrId: reference,
+        requestId: ref.id,
+      }),
+    );
 
     res.status(201).json({ ok: true, subscriptionId: ref.id, amount });
   }),
@@ -696,6 +797,61 @@ customerRouter.patch(
     }
 
     res.json({ ok: true, updated: snap.size });
+  }),
+);
+
+customerRouter.get(
+  "/bookings/:id/tracking",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const bookingSnap = await collections.bookings.doc(req.params.id).get();
+    if (!bookingSnap.exists) {
+      throw new ApiError(404, "Booking not found.", "BOOKING_NOT_FOUND");
+    }
+    const booking = bookingSnap.data();
+    const isCustomer = booking.customerId === req.user.uid;
+    const isWorker = booking.workerId === req.user.uid;
+    const isAdmin = Boolean(req.user.admin);
+    if (!isCustomer && !isWorker && !isAdmin) {
+      throw new ApiError(403, "You do not have access to this tracking.", "FORBIDDEN");
+    }
+
+    const workerSnap = booking.workerId
+      ? await collections.workers.doc(booking.workerId).get()
+      : null;
+    const worker = workerSnap?.exists ? workerSnap.data() : null;
+    const eta = trackingEta(booking, worker);
+    const snapshot = trackingSnapshot(booking);
+
+    let counterpartPhone = "";
+    if (isCustomer || isAdmin) {
+      counterpartPhone = String(worker?.phone || "");
+    } else if (isWorker) {
+      const contactSnap = await bookingSnap.ref.collection("private").doc("contact").get();
+      counterpartPhone = contactSnap.exists ? String(contactSnap.data().phone || "") : "";
+    }
+
+    res.json({
+      booking: docToJson(bookingSnap),
+      tracking: {
+        ...snapshot,
+        ...eta,
+        counterpartPhone,
+        worker: worker
+          ? {
+              id: booking.workerId,
+              name: booking.workerName || worker.name || "EasyHome Pro",
+              photoPath: booking.workerPhotoPath || worker.photoPath || "",
+              phone: isCustomer || isAdmin ? String(worker.phone || "") : "",
+              rating: Number(worker.rating) || 0,
+              service: worker.service || booking.service,
+              area: worker.area || "",
+              kycStatus: worker.kycStatus || "not_submitted",
+            }
+          : null,
+        phaseMeta: PHASE_META[snapshot.phase] || null,
+      },
+    });
   }),
 );
 

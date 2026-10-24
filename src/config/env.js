@@ -81,9 +81,12 @@ export const env = {
   adminName: process.env.ADMIN_NAME || "EasyHome Admin",
   commissionPct: Number(process.env.DEFAULT_COMMISSION_PCT || 10),
   subscriptionPrice: Number(process.env.DEFAULT_SUBSCRIPTION_PRICE || 199),
-  paymentProvider: process.env.PAYMENT_PROVIDER || "manual",
+  paymentProvider: process.env.PAYMENT_PROVIDER || "razorpay",
   razorpayKeyId: process.env.RAZORPAY_KEY_ID || "",
   razorpayKeySecret: process.env.RAZORPAY_KEY_SECRET || "",
+  razorpayWebhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET || "",
   trustProxy: Number(process.env.TRUST_PROXY || 1),
   enableDemoData: asBool(process.env.ENABLE_DEMO_DATA, false),
+  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || "",
+  adminTelegramChatId: process.env.ADMIN_TELEGRAM_CHAT_ID || "",
 };

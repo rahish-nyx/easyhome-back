@@ -4,7 +4,7 @@ import { collections, db } from "../config/firebase.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { sendMail, emailLayout, notify } from "../lib/notify.js";
-import { premiumActive } from "../lib/booking.js";
+import { premiumActive, workerDues } from "../lib/booking.js";
 import { syncPublicWorker } from "../lib/workers.js";
 import { docToJson, docsToJson, lastMonths, monthKey, toDate } from "../lib/utils.js";
 import { env } from "../config/env.js";
@@ -27,6 +27,7 @@ adminMoneyRouter.get(
     const snap = await queryRef.limit(100).get();
     const subscriptions = docsToJson(snap).map((sub) => ({
       ...sub,
+      utrId: sub.utrId || sub.paymentNote || "",
       isPremiumNow:
         sub.status === "active" &&
         sub.endAt &&
@@ -174,7 +175,12 @@ adminMoneyRouter.get(
         .orderBy("createdAt", "desc");
     }
     const snap = await queryRef.limit(100).get();
-    res.json({ commissions: docsToJson(snap) });
+    res.json({
+      commissions: docsToJson(snap).map((commission) => ({
+        ...commission,
+        utrId: commission.utrId || commission.note || "",
+      })),
+    });
   }),
 );
 
@@ -191,7 +197,8 @@ adminMoneyRouter.patch(
       }
       const workerRef = collections.workers.doc(commission.workerId);
       const workerSnap = await tx.get(workerRef);
-      const dues = Math.max(0, Number(workerSnap.data()?.dues) || 0);
+      const dues = workerDues(workerSnap.data());
+      const remaining = Math.max(0, dues - Number(commission.amount || 0));
 
       tx.update(ref, {
         status: "approved",
@@ -201,7 +208,12 @@ adminMoneyRouter.patch(
       });
       tx.set(
         workerRef,
-        { dues: Math.max(0, dues - Number(commission.amount || 0)), updatedAt: FieldValue.serverTimestamp() },
+        {
+          dues: remaining,
+          dueCommissionAmount: remaining,
+          hasPendingCommission: remaining > 0,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
         { merge: true },
       );
       return { commission };

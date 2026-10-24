@@ -1,5 +1,6 @@
 import { app } from "./app.js";
 import { env } from "./config/env.js";
+import { startTrackingWatchdog } from "./lib/tracking.js";
 
 const server = app.listen(env.port, () => {
   console.log("");
@@ -8,6 +9,10 @@ const server = app.listen(env.port, () => {
   console.log(`  env: ${env.nodeEnv}${env.emulator ? " (Firebase emulators)" : ""}`);
   console.log("");
 });
+
+// Lightweight in-process accountability watchdog. The worker PWA also runs a
+// local watchdog so the buzzer fires immediately even on a slow connection.
+startTrackingWatchdog();
 
 let shuttingDown = false;
 

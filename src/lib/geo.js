@@ -1,4 +1,4 @@
-const EARTH_RADIUS_M = 6371000;
+import { getDistance } from "geolib";
 
 export function distanceMeters(a, b) {
   if (
@@ -10,16 +10,12 @@ export function distanceMeters(a, b) {
     return null;
   }
 
-  const lat1 = (Number(a.lat) * Math.PI) / 180;
-  const lat2 = (Number(b.lat) * Math.PI) / 180;
-  const dLat = lat2 - lat1;
-  const dLng = ((Number(b.lng) - Number(a.lng)) * Math.PI) / 180;
-
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-
-  return Math.round(2 * EARTH_RADIUS_M * Math.asin(Math.sqrt(h)));
+  return Math.round(
+    getDistance(
+      { latitude: Number(a.lat), longitude: Number(a.lng) },
+      { latitude: Number(b.lat), longitude: Number(b.lng) },
+    ),
+  );
 }
 
 export function hasCoords(value) {

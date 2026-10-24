@@ -11,6 +11,14 @@ const phone = z
 
 const coord = z.coerce.number().finite();
 
+const utr = z
+  .string()
+  .trim()
+  .transform((value) => value.replace(/\s+/g, "").toUpperCase())
+  .refine((value) => /^[A-Z0-9][A-Z0-9._-]{5,63}$/.test(value), {
+    message: "Enter a valid UTR / transaction reference (6–64 characters)",
+  });
+
 /**
  * Multipart form fields arrive as strings. These helpers keep the same schemas
  * usable for both JSON requests and FormData (promo/settings image uploads).
@@ -105,6 +113,8 @@ export const bookingSchema = z.object({
   serviceKey: z.string().trim().min(2).max(40).optional(),
   description: z.string().trim().min(10).max(600),
   area: z.string().trim().min(2).max(160),
+  city: z.string().trim().max(80).optional(),
+  state: z.string().trim().max(80).optional(),
   lat: coord.nullable().optional(),
   lng: coord.nullable().optional(),
   phone: phone,
@@ -138,11 +148,13 @@ export const paymentSchema = z.object({
 
 export const subscriptionRequestSchema = z.object({
   plan: z.enum(["monthly", "quarterly", "yearly"]).default("monthly"),
+  utrId: utr.optional(),
   note: z.string().trim().max(200).optional(),
 });
 
 export const commissionPaidSchema = z.object({
-  note: z.string().trim().min(3).max(200),
+  utrId: utr.optional(),
+  note: z.string().trim().max(200).optional(),
 });
 
 export const chatSchema = z.object({
@@ -190,12 +202,49 @@ export const promoSchema = z.object({
   endsAt: z.string().datetime().optional().or(z.literal("")),
 });
 
+export const serviceZoneSchema = z.object({
+  state: z.string().trim().min(2).max(80),
+  cityName: z.string().trim().min(2).max(80),
+  latitude: z.coerce.number().min(-90).max(90),
+  longitude: z.coerce.number().min(-180).max(180),
+  radiusKm: z.coerce.number().min(0.5).max(200).default(10),
+  isActive: formBoolean.default(true),
+});
+
+export const waitlistSchema = z.object({
+  name: z.string().trim().min(2).max(80),
+  phone,
+  email: z.string().trim().email().max(160).optional().or(z.literal("")),
+  cityName: z.string().trim().max(80).optional().or(z.literal("")),
+  state: z.string().trim().max(80).optional().or(z.literal("")),
+  lat: coord.nullable().optional(),
+  lng: coord.nullable().optional(),
+  message: z.string().trim().max(300).optional().or(z.literal("")),
+});
+
+export const trackingLocationSchema = z.object({
+  lat: z.coerce.number().min(-90).max(90),
+  lng: z.coerce.number().min(-180).max(180),
+  accuracy: z.coerce.number().min(0).max(100000).optional(),
+  heading: z.coerce.number().min(0).max(360).optional().nullable(),
+  speed: z.coerce.number().min(0).max(200).optional().nullable(),
+});
+
+export const trackingPhaseSchema = z.object({
+  phase: z.enum(["assigned", "en_route", "arrived", "working", "completed"]),
+  lat: z.coerce.number().min(-90).max(90).optional().nullable(),
+  lng: z.coerce.number().min(-180).max(180).optional().nullable(),
+  accuracy: z.coerce.number().min(0).max(100000).optional().nullable(),
+  note: z.string().trim().max(240).optional().or(z.literal("")),
+});
+
 export const settingsSchema = z.object({
   commissionPct: z.coerce.number().min(0).max(40).optional(),
   subscriptionPrice: z.coerce.number().int().min(0).max(100000).optional(),
   customerBenefits: formStringArray.optional(),
   workerBenefits: formStringArray.optional(),
   upiId: z.string().trim().max(100).optional(),
+  qrImageUrl: z.string().trim().max(500).optional(),
   supportPhone: z.string().trim().max(20).optional(),
   maintenanceMode: formBoolean.optional(),
 });

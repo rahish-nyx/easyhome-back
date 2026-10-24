@@ -83,7 +83,10 @@ Health check: `GET /health` -> `{ ok: true, service: "easyhome-api", version: 2 
 | `RESEND_API_KEY`, `MAIL_FROM` | Optional transactional email |
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME` | First admin seed |
 | `DEFAULT_COMMISSION_PCT`, `DEFAULT_SUBSCRIPTION_PRICE` | Business defaults |
-| `PAYMENT_PROVIDER` | `manual` today; Razorpay adapter can follow |
+| `PAYMENT_PROVIDER` | `razorpay` (automated checkout + webhook) |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | Razorpay API credentials |
+| `RAZORPAY_WEBHOOK_SECRET` | HMAC secret for `/api/payment/webhook` |
+| `TELEGRAM_BOT_TOKEN`, `ADMIN_TELEGRAM_CHAT_ID` | Optional admin payment alerts |
 
 `FIRESTORE_EMULATOR_HOST`, `FIREBASE_AUTH_EMULATOR_HOST` and `FIREBASE_STORAGE_EMULATOR_HOST` switch the API to the emulator suite without a service account.
 
@@ -111,12 +114,13 @@ Health check: `GET /health` -> `{ ok: true, service: "easyhome-api", version: 2 
 | `bookings/{id}/private/contact` | Phone and private contact details |
 | `jobFeed/{bookingId}` | Open-job feed used by workers |
 | `urgentPublic/{bookingId}` | Sanitised urgent jobs for the storefront |
-| `subscriptions/{id}` | Manual UPI membership requests and approvals |
-| `commissions/{id}` | Worker commission dues and settlements |
+| `subscriptions/{id}` | Razorpay membership orders and activated plans |
+| `commissions/{id}` | Worker commission dues and Razorpay settlements |
+| `payments/{paymentId}` | Verified Razorpay payment audit records |
 | `reviews/{id}` | Ratings and customer feedback |
 | `chats/{uid}/messages/{id}` | Customer/admin support thread |
 | `notifications/{id}` | In-app notifications |
-| `settings/app` | Commission, pricing, UPI, maintenance and announcements |
+| `settings/app` | Commission, pricing, maintenance and announcements |
 | `admins/{uid}` | Admin membership document |
 
 ## API surface
@@ -154,7 +158,7 @@ All routes are prefixed by `/api`.
 | PATCH | `/bookings/:id/cancel`, `/bookings/:id/payment` |
 | POST | `/bookings/:id/review` |
 | GET | `/bookings/:id/contact` |
-| POST | `/subscriptions` |
+| POST | `/payment/subscription/order`, `/payment/subscription/verify` |
 | POST | `/chat`, `/chat/read`, `/notifications/read` |
 | GET | `/server-time` |
 
@@ -165,9 +169,17 @@ All routes are prefixed by `/api`.
 | PATCH | `/worker/profile`, `/worker/availability` |
 | POST | `/worker/jobs/:id/accept`, `/worker/jobs/:id/price` |
 | POST | `/worker/jobs/:id/confirm`, `/worker/jobs/:id/start`, `/worker/jobs/:id/complete` |
-| POST | `/worker/commission/:bookingId/paid` |
+| POST | `/payment/commission/order`, `/payment/commission/verify` |
 | GET | `/worker/earnings`, `/worker/commission` |
 | POST | `/worker/kyc`, `/worker/welcome-email` |
+
+### Payments
+
+| Method | Path |
+| --- | --- |
+| POST | `/payment/subscription/order`, `/payment/subscription/verify` |
+| POST | `/payment/commission/order`, `/payment/commission/verify` |
+| POST | `/payment/webhook` (Razorpay signature required) |
 
 ### Admin
 
@@ -193,7 +205,10 @@ All routes are prefixed by `/api`.
 ## Email and payments
 
 - In-app notifications always work. Email is sent only when `RESEND_API_KEY` is set.
-- Memberships use manual UPI plus admin approval by default. `PAYMENT_PROVIDER` leaves room for a Razorpay adapter without changing the client contract.
+- Memberships and worker commission clearances use Razorpay Checkout. The API creates the order, verifies the payment signature server-side, and fulfils the benefit immediately.
+- Razorpay Dashboard webhook URL: `https://<your-api-domain>/api/payment/webhook`. Subscribe to `payment.captured` and `order.paid`; set the signing secret as `RAZORPAY_WEBHOOK_SECRET`.
+- Fulfilment is idempotent, so the browser verify call and the webhook can safely race. Telegram alerts are best-effort and never block fulfilment.
+- Legacy manual UTR routes return `410 MANUAL_PAYMENT_DISABLED`. Historical admin approval screens remain for old records.
 
 ## Deploy checklist
 

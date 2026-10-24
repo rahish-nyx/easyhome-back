@@ -48,8 +48,9 @@ export async function appSettings({ fresh = false } = {}) {
       "Free urgent-job priority",
       "Verified Pro badge",
     ],
-    upiId: "easyhome@upi",
+    upiId: "rahishcnrb@ybl",
     qrImagePath: "",
+    qrImageUrl: "",
     supportPhone: "",
     maintenanceMode: false,
     ...(snap.exists ? snap.data() : {}),
@@ -68,7 +69,10 @@ export function premiumActive(worker) {
 }
 
 export function workerDues(worker) {
-  return Math.max(0, Number(worker?.dues) || 0);
+  return Math.max(
+    0,
+    Number(worker?.dues ?? worker?.dueCommissionAmount) || 0,
+  );
 }
 
 export function commissionFor(price, commissionPct, { premium = false } = {}) {

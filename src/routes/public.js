@@ -1,8 +1,15 @@
+import { FieldValue } from "firebase-admin/firestore";
 import { Router } from "express";
 import { collections } from "../config/firebase.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { appSettings } from "../lib/booking.js";
 import { nearestServiceArea } from "../lib/geo.js";
+import {
+  OUT_OF_ZONE_MESSAGE,
+  activeServiceZones,
+  evaluateServiceZones,
+} from "../lib/zones.js";
+import { waitlistSchema } from "../lib/validate.js";
 import { docToJson, docsToJson } from "../lib/utils.js";
 
 export const publicRouter = Router();
@@ -14,9 +21,10 @@ export const publicRouter = Router();
 publicRouter.get(
   "/bootstrap",
   asyncHandler(async (_req, res) => {
-    const [servicesSnap, citiesSnap, promosSnap, settings] = await Promise.all([
+    const [servicesSnap, citiesSnap, zonesSnap, promosSnap, settings] = await Promise.all([
       collections.services.orderBy("order", "asc").get(),
       collections.cities.orderBy("name", "asc").get(),
+      collections.serviceZones.get(),
       collections.promos.orderBy("order", "asc").get(),
       appSettings(),
     ]);
@@ -26,6 +34,14 @@ publicRouter.get(
       (service) => service.active !== false,
     );
     const cities = docsToJson(citiesSnap).filter((city) => city.active !== false);
+    const zones = docsToJson(zonesSnap)
+      .filter((zone) => zone.isActive !== false)
+      .map((zone) => ({
+        ...zone,
+        latitude: Number(zone.latitude ?? zone.lat),
+        longitude: Number(zone.longitude ?? zone.lng),
+        radiusKm: Number(zone.radiusKm) || 10,
+      }));
     const promos = docsToJson(promosSnap).filter((promo) => {
       if (promo.active === false) return false;
       const starts = promo.startsAt ? new Date(promo.startsAt).getTime() : 0;
@@ -39,6 +55,7 @@ publicRouter.get(
     res.json({
       services,
       cities,
+      zones,
       promos,
       settings,
       version: 2,
@@ -52,6 +69,44 @@ publicRouter.get(
   asyncHandler(async (req, res) => {
     const lat = Number(req.query.lat);
     const lng = Number(req.query.lng);
+    const cityName = req.query.city ? String(req.query.city) : "";
+    const state = req.query.state ? String(req.query.state) : "";
+    const zones = await activeServiceZones();
+
+    if (zones.length) {
+      const result = evaluateServiceZones(zones, { lat, lng, cityName, state });
+      if (!Number.isFinite(lat) && !Number.isFinite(lng) && !cityName) {
+        return res.status(400).json({
+          allowed: false,
+          configured: true,
+          message: "Share your location or choose a city so we can check coverage.",
+        });
+      }
+      return res.json({
+        allowed: result.allowed,
+        configured: true,
+        city: result.zone?.cityName || cityName || null,
+        state: result.zone?.state || state || null,
+        cityId: result.zone?.id || null,
+        zone: result.zone
+          ? {
+              id: result.zone.id,
+              cityName: result.zone.cityName,
+              state: result.zone.state,
+              radiusKm: result.zone.radiusKm,
+              latitude: result.zone.latitude,
+              longitude: result.zone.longitude,
+            }
+          : null,
+        nearestZone: result.nearest?.zone?.cityName || null,
+        distanceMeters: result.distanceMeters,
+        radiusKm: result.zone?.radiusKm || null,
+        message: result.allowed
+          ? `We serve ${result.zone?.cityName || "your area"}.`
+          : OUT_OF_ZONE_MESSAGE,
+      });
+    }
+
     const citiesSnap = await collections.cities.where("active", "==", true).get();
     const cities = docsToJson(citiesSnap);
     const result = nearestServiceArea(cities, lat, lng);
@@ -62,16 +117,54 @@ publicRouter.get(
 
     return res.json({
       allowed: result.allowed,
+      configured: false,
       city: result.city?.name || null,
       cityId: result.city?.id || null,
+      nearestZone: result.nearest?.city?.name || null,
       distanceMeters: result.distanceMeters,
       radiusKm: result.radiusKm,
       message: result.allowed
         ? `We serve ${result.city?.name || "your area"}.`
-        : `We are not in your area yet. Nearest: ${result.city?.name || "—"} (${Math.round(
-            (result.distanceMeters || 0) / 1000,
-          )} km away).`,
+        : OUT_OF_ZONE_MESSAGE,
     });
+  }),
+);
+
+publicRouter.post(
+  "/waitlist",
+  asyncHandler(async (req, res) => {
+    const body = waitlistSchema.parse(req.body || {});
+    const existing = await collections.serviceWaitlist
+      .where("phone", "==", body.phone)
+      .limit(10)
+      .get();
+    const duplicate = existing.docs.find((doc) => {
+      const item = doc.data();
+      return String(item.cityName || "").toLowerCase() ===
+        String(body.cityName || "").toLowerCase();
+    });
+
+    if (duplicate) {
+      return res.status(200).json({ ok: true, duplicate: true, id: duplicate.id });
+    }
+
+    const ref = collections.serviceWaitlist.doc();
+    await ref.set({
+      name: body.name,
+      phone: body.phone,
+      email: body.email || "",
+      cityName: body.cityName || "",
+      state: body.state || "",
+      lat: Number.isFinite(Number(body.lat)) ? Number(body.lat) : null,
+      lng: Number.isFinite(Number(body.lng)) ? Number(body.lng) : null,
+      message: body.message || "",
+      status: "waiting",
+      source: "geofence",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    res.status(201).json({ ok: true, id: ref.id });
   }),
 );
 

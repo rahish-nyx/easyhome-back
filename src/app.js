@@ -14,6 +14,8 @@ import { workerRouter } from "./routes/worker.js";
 import { adminRouter } from "./routes/admin.js";
 import { adminCatalogRouter } from "./routes/adminCatalog.js";
 import { adminMoneyRouter } from "./routes/adminMoney.js";
+import { adminZonesRouter } from "./routes/adminZones.js";
+import { paymentRouter } from "./routes/payment.js";
 
 export const app = express();
 
@@ -44,7 +46,15 @@ app.use(
 );
 
 app.use(compression({ threshold: 1024 }));
-app.use(express.json({ limit: "1mb" }));
+app.use(
+  express.json({
+    limit: "1mb",
+    verify: (req, _res, buffer) => {
+      // Razorpay webhooks are signed over the exact raw request body.
+      req.rawBody = buffer;
+    },
+  }),
+);
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 
 if (!env.isProd) {
@@ -118,9 +128,11 @@ app.use("/api/public", publicRouter);
 app.use("/api/auth", authRouter);
 app.use("/api", customerRouter);
 app.use("/api", workerRouter);
+app.use("/api/payment", paymentRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/admin", adminCatalogRouter);
 app.use("/api/admin", adminMoneyRouter);
+app.use("/api/admin", adminZonesRouter);
 
 app.use(notFound);
 app.use(errorHandler);

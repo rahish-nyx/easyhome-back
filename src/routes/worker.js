@@ -8,6 +8,8 @@ import {
   availabilitySchema,
   commissionPaidSchema,
   priceSchema,
+  trackingLocationSchema,
+  trackingPhaseSchema,
   workerProfileSchema,
 } from "../lib/validate.js";
 import {
@@ -19,6 +21,14 @@ import {
 import { distanceMeters, hasCoords } from "../lib/geo.js";
 import { uploadImage } from "../lib/media.js";
 import { notify, notifyAdmins, sendMail, emailLayout } from "../lib/notify.js";
+import { commissionTelegramMessage, sendTelegramAlert } from "../lib/telegram.js";
+import {
+  PHASE_META,
+  TRACKING_PHASES,
+  nextPhase,
+  phaseForBooking,
+  phaseHistoryEntry,
+} from "../lib/tracking.js";
 import { docToJson, lastMonths, monthKey, toDate } from "../lib/utils.js";
 
 export const workerRouter = Router();
@@ -162,13 +172,43 @@ workerRouter.post(
       }
 
       const now = FieldValue.serverTimestamp();
+      const workerLat = Number.isFinite(Number(worker.currentLat))
+        ? Number(worker.currentLat)
+        : Number.isFinite(Number(worker.lat))
+          ? Number(worker.lat)
+          : null;
+      const workerLng = Number.isFinite(Number(worker.currentLng))
+        ? Number(worker.currentLng)
+        : Number.isFinite(Number(worker.lng))
+          ? Number(worker.lng)
+          : null;
+
       tx.update(bookingRef, {
         workerId: uid,
         workerName: worker.name,
         workerPhotoPath: worker.photoPath || "",
         status: "accepted",
+        activeJob: true,
+        trackingPhase: TRACKING_PHASES.ASSIGNED,
+        currentLat: workerLat,
+        currentLng: workerLng,
+        lastLocationAt: workerLat !== null && workerLng !== null ? now : null,
+        lastUpdatedTimestamp: now,
+        trackingStatusUpdatedAt: now,
+        trackingAlert: false,
+        trackingNudgeCount: 0,
         acceptedAt: now,
         updatedAt: now,
+        statusHistory: FieldValue.arrayUnion(
+          phaseHistoryEntry({
+            phase: TRACKING_PHASES.ASSIGNED,
+            status: "accepted",
+            actorId: uid,
+            actorRole: "worker",
+            lat: workerLat,
+            lng: workerLng,
+          }),
+        ),
       });
       tx.set(
         collections.jobFeed.doc(bookingRef.id),
@@ -188,7 +228,7 @@ workerRouter.post(
       title: "Worker found!",
       body: `${result.booking.workerName} accepted your ${result.service} booking.`,
       type: "job_accepted",
-      link: "/bookings",
+      link: `/bookings/${req.params.id}/track`,
     });
 
     res.json({ ok: true, booking: { id: req.params.id, ...result.booking } });
@@ -297,28 +337,240 @@ workerRouter.patch(
 
     const result = await db.runTransaction(async (tx) => {
       const { booking } = await assertOwnJob(tx, req.params.id, uid);
-      if (booking.status !== "accepted") {
-        throw new ApiError(409, "Only accepted jobs can be started.", "STATUS_INVALID");
+      if (["completed", "cancelled"].includes(booking.status)) {
+        throw new ApiError(409, "This job is already closed.", "STATUS_INVALID");
       }
       if (!booking.pricing?.confirmedAt) {
         throw new ApiError(409, "Confirm the final price before starting.", "PRICE_NOT_CONFIRMED");
       }
+      const currentPhase = phaseForBooking(booking);
+      if (currentPhase && currentPhase !== TRACKING_PHASES.ASSIGNED) {
+        throw new ApiError(409, "This job has already been started.", "STATUS_INVALID");
+      }
+
       tx.update(bookingRef, {
-        status: "ongoing",
-        startedAt: FieldValue.serverTimestamp(),
+        trackingPhase: TRACKING_PHASES.EN_ROUTE,
+        enRouteAt: FieldValue.serverTimestamp(),
+        lastUpdatedTimestamp: FieldValue.serverTimestamp(),
+        trackingStatusUpdatedAt: FieldValue.serverTimestamp(),
+        trackingAlert: false,
         updatedAt: FieldValue.serverTimestamp(),
+        statusHistory: FieldValue.arrayUnion(
+          phaseHistoryEntry({
+            phase: TRACKING_PHASES.EN_ROUTE,
+            status: "accepted",
+            actorId: uid,
+            actorRole: "worker",
+          }),
+        ),
       });
       return { booking };
     });
 
     await notify(result.booking.customerId, {
       title: "Worker is on the way",
-      body: `${result.booking.workerName} started your ${result.booking.service} job.`,
+      body: `${result.booking.workerName} started your ${result.booking.service} job and is heading to you.`,
       type: "job_started",
-      link: "/bookings",
+      link: `/bookings/${req.params.id}/track`,
     });
 
-    res.json({ ok: true });
+    res.json({ ok: true, phase: TRACKING_PHASES.EN_ROUTE });
+  }),
+);
+
+workerRouter.patch(
+  "/worker/jobs/:id/phase",
+  requireAuth,
+  requireApprovedWorker,
+  asyncHandler(async (req, res) => {
+    const body = trackingPhaseSchema.parse(req.body || {});
+    const uid = req.user.uid;
+    const bookingRef = collections.bookings.doc(req.params.id);
+    const workerRef = collections.workers.doc(uid);
+    const phase = body.phase;
+    const meta = PHASE_META[phase];
+    if (!meta) throw new ApiError(422, "Unknown tracking phase.", "PHASE_INVALID");
+
+    const result = await db.runTransaction(async (tx) => {
+      const { booking } = await assertOwnJob(tx, req.params.id, uid);
+      if (["completed", "cancelled"].includes(booking.status)) {
+        throw new ApiError(409, "This job is already closed.", "STATUS_INVALID");
+      }
+      if (booking.status === "pending") {
+        throw new ApiError(409, "Accept this job before updating its phase.", "STATUS_INVALID");
+      }
+
+      const currentPhase = phaseForBooking(booking);
+      if (currentPhase === phase) {
+        return { booking, unchanged: true, phase };
+      }
+      if (phase !== nextPhase(currentPhase)) {
+        const currentLabel = PHASE_META[currentPhase]?.label || currentPhase || "not started";
+        throw new ApiError(
+          409,
+          `The job is currently ${currentLabel}. Complete the current step first.`,
+          "PHASE_OUT_OF_ORDER",
+          { currentPhase, requestedPhase: phase, nextPhase: nextPhase(currentPhase) },
+        );
+      }
+      if (
+        [TRACKING_PHASES.WORKING, TRACKING_PHASES.COMPLETED].includes(phase) &&
+        !booking.pricing?.confirmedAt
+      ) {
+        throw new ApiError(409, "Confirm the final price first.", "PRICE_NOT_CONFIRMED");
+      }
+
+      const hasPoint =
+        Number.isFinite(Number(body.lat)) && Number.isFinite(Number(body.lng));
+      const now = FieldValue.serverTimestamp();
+      const updates = {
+        status: meta.status,
+        trackingPhase: phase,
+        activeJob: phase !== TRACKING_PHASES.COMPLETED,
+        lastUpdatedTimestamp: now,
+        trackingStatusUpdatedAt: now,
+        trackingAlert: false,
+        updatedAt: now,
+        statusHistory: FieldValue.arrayUnion(
+          phaseHistoryEntry({
+            phase,
+            status: meta.status,
+            actorId: uid,
+            actorRole: "worker",
+            lat: hasPoint ? Number(body.lat) : null,
+            lng: hasPoint ? Number(body.lng) : null,
+            note: body.note || "",
+          }),
+        ),
+      };
+
+      if (hasPoint) {
+        updates.currentLat = Number(body.lat);
+        updates.currentLng = Number(body.lng);
+        updates.currentAccuracy = Number.isFinite(Number(body.accuracy))
+          ? Number(body.accuracy)
+          : null;
+        updates.lastLocationAt = now;
+      }
+
+      if (phase === TRACKING_PHASES.EN_ROUTE) updates.enRouteAt = now;
+      if (phase === TRACKING_PHASES.ARRIVED) updates.arrivedAt = now;
+      if (phase === TRACKING_PHASES.WORKING) {
+        updates.startedAt = booking.startedAt || now;
+      }
+      if (phase === TRACKING_PHASES.COMPLETED) {
+        updates.completedAt = now;
+        updates.currentLat = null;
+        updates.currentLng = null;
+        tx.set(
+          workerRef,
+          { jobsCompleted: FieldValue.increment(1), updatedAt: now },
+          { merge: true },
+        );
+        tx.set(
+          collections.workersPublic.doc(uid),
+          { jobsCompleted: FieldValue.increment(1), updatedAt: now },
+          { merge: true },
+        );
+      }
+
+      tx.update(bookingRef, updates);
+      return { booking, phase };
+    });
+
+    if (!result.unchanged) {
+      const notificationByPhase = {
+        [TRACKING_PHASES.EN_ROUTE]: {
+          title: "Worker is on the way",
+          body: `${result.booking.workerName} is heading to your ${result.booking.service} job.`,
+          type: "job_started",
+        },
+        [TRACKING_PHASES.ARRIVED]: {
+          title: "Your pro has arrived",
+          body: `${result.booking.workerName} reached your location for ${result.booking.service}.`,
+          type: "job_arrived",
+        },
+        [TRACKING_PHASES.WORKING]: {
+          title: "Work has started",
+          body: `${result.booking.workerName} started the ${result.booking.service} job.`,
+          type: "job_started",
+        },
+        [TRACKING_PHASES.COMPLETED]: {
+          title: "Job completed",
+          body: `Confirm the payment for ${result.booking.service} and leave a review.`,
+          type: "job_completed",
+        },
+      };
+      const notification = notificationByPhase[phase];
+      if (notification) {
+        await notify(result.booking.customerId, {
+          ...notification,
+          link:
+            phase === TRACKING_PHASES.COMPLETED
+              ? "/bookings"
+              : `/bookings/${req.params.id}/track`,
+        });
+      }
+    }
+
+    res.json({ ok: true, phase: result.phase });
+  }),
+);
+
+workerRouter.patch(
+  "/worker/jobs/:id/location",
+  requireAuth,
+  requireApprovedWorker,
+  asyncHandler(async (req, res) => {
+    const body = trackingLocationSchema.parse(req.body || {});
+    const uid = req.user.uid;
+    const bookingRef = collections.bookings.doc(req.params.id);
+    const workerRef = collections.workers.doc(uid);
+
+    const result = await db.runTransaction(async (tx) => {
+      const { booking } = await assertOwnJob(tx, req.params.id, uid);
+      if (!booking.activeJob || !["accepted", "ongoing"].includes(booking.status)) {
+        throw new ApiError(409, "This job is not active for tracking.", "TRACKING_INACTIVE");
+      }
+      if (phaseForBooking(booking) === TRACKING_PHASES.COMPLETED) {
+        throw new ApiError(409, "This job is already completed.", "TRACKING_INACTIVE");
+      }
+
+      const now = FieldValue.serverTimestamp();
+      tx.update(bookingRef, {
+        currentLat: body.lat,
+        currentLng: body.lng,
+        currentAccuracy: Number.isFinite(Number(body.accuracy))
+          ? Number(body.accuracy)
+          : null,
+        currentHeading: Number.isFinite(Number(body.heading)) ? Number(body.heading) : null,
+        currentSpeed: Number.isFinite(Number(body.speed)) ? Number(body.speed) : null,
+        lastLocationAt: now,
+        lastUpdatedTimestamp: now,
+        trackingAlert: false,
+        updatedAt: now,
+      });
+      tx.set(
+        workerRef,
+        {
+          lat: body.lat,
+          lng: body.lng,
+          currentLat: body.lat,
+          currentLng: body.lng,
+          lastSeenAt: now,
+          updatedAt: now,
+        },
+        { merge: true },
+      );
+      return { booking };
+    });
+
+    res.json({
+      ok: true,
+      bookingId: req.params.id,
+      activeJob: Boolean(result.booking.activeJob),
+      receivedAt: new Date().toISOString(),
+    });
   }),
 );
 
@@ -336,19 +588,38 @@ workerRouter.patch(
       if (booking.status !== "ongoing") {
         throw new ApiError(409, "Only ongoing jobs can be completed.", "STATUS_INVALID");
       }
+      if (!booking.pricing?.confirmedAt) {
+        throw new ApiError(409, "Confirm the final price first.", "PRICE_NOT_CONFIRMED");
+      }
+      const now = FieldValue.serverTimestamp();
       tx.update(bookingRef, {
         status: "completed",
-        completedAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
+        trackingPhase: TRACKING_PHASES.COMPLETED,
+        activeJob: false,
+        currentLat: null,
+        currentLng: null,
+        trackingAlert: false,
+        completedAt: now,
+        lastUpdatedTimestamp: now,
+        trackingStatusUpdatedAt: now,
+        updatedAt: now,
+        statusHistory: FieldValue.arrayUnion(
+          phaseHistoryEntry({
+            phase: TRACKING_PHASES.COMPLETED,
+            status: "completed",
+            actorId: uid,
+            actorRole: "worker",
+          }),
+        ),
       });
       tx.set(
         workerRef,
-        { jobsCompleted: FieldValue.increment(1), updatedAt: FieldValue.serverTimestamp() },
+        { jobsCompleted: FieldValue.increment(1), updatedAt: now },
         { merge: true },
       );
       tx.set(
         collections.workersPublic.doc(uid),
-        { jobsCompleted: FieldValue.increment(1), updatedAt: FieldValue.serverTimestamp() },
+        { jobsCompleted: FieldValue.increment(1), updatedAt: now },
         { merge: true },
       );
       return { booking };
@@ -361,7 +632,7 @@ workerRouter.patch(
       link: "/bookings",
     });
 
-    res.json({ ok: true });
+    res.json({ ok: true, phase: TRACKING_PHASES.COMPLETED });
   }),
 );
 
@@ -370,8 +641,24 @@ workerRouter.post(
   requireAuth,
   requireApprovedWorker,
   asyncHandler(async (req, res) => {
-    const { note } = commissionPaidSchema.parse(req.body || {});
+    throw new ApiError(
+      410,
+      "Manual UTR payments are disabled. Use the Razorpay checkout.",
+      "MANUAL_PAYMENT_DISABLED",
+    );
+    // Legacy manual flow retained below only as historical reference.
+    const { note, utrId } = commissionPaidSchema.parse(req.body || {});
     const uid = req.user.uid;
+    const reference = String(utrId || note || "")
+      .replace(/\s+/g, "")
+      .toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9._-]{5,63}$/.test(reference)) {
+      throw new ApiError(
+        422,
+        "Enter a valid UTR / transaction reference from your payment app.",
+        "UTR_REQUIRED",
+      );
+    }
 
     const snap = await collections.commissions
       .where("workerId", "==", uid)
@@ -388,20 +675,40 @@ workerRouter.post(
     if (commission.status === "approved") {
       throw new ApiError(409, "This commission is already approved.", "ALREADY_APPROVED");
     }
+    if (commission.status === "paid") {
+      throw new ApiError(
+        409,
+        "This payment is already submitted and waiting for admin approval.",
+        "PAYMENT_PENDING",
+      );
+    }
 
     await commissionDoc.ref.update({
       status: "paid",
-      note,
+      utrId: reference,
+      note: reference,
+      rejectionReason: FieldValue.delete(),
       paidAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
 
     await notifyAdmins({
       title: "Commission payment submitted",
-      body: `${req.user.name || "A worker"} submitted ₹${commission.amount} for ${commission.service}. Ref: ${note}`,
+      body: `${req.user.name || "A worker"} submitted ₹${commission.amount} for ${commission.service}. UTR: ${reference}`,
       type: "commission",
       link: "/admin/revenue",
     });
+
+    await sendTelegramAlert(
+      commissionTelegramMessage({
+        workerName: commission.workerName || req.user.name,
+        workerId: uid,
+        service: commission.service,
+        bookingId: commission.bookingId,
+        amount: commission.amount,
+        utrId: reference,
+      }),
+    );
 
     res.json({ ok: true });
   }),
