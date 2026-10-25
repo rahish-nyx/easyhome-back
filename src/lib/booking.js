@@ -68,6 +68,14 @@ export function premiumActive(worker) {
   return Boolean(until && until.getTime() > Date.now());
 }
 
+/** Active paid membership on a customer profile. */
+export function customerMembershipActive(user) {
+  const subscription = user?.subscription || {};
+  if (subscription.status !== "active") return false;
+  const until = toDate(subscription.endAt);
+  return !until || until.getTime() > Date.now();
+}
+
 export function workerDues(worker) {
   return Math.max(
     0,

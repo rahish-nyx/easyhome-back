@@ -4,7 +4,7 @@ import { z } from "zod";
 import { collections, db } from "../config/firebase.js";
 import { env } from "../config/env.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
-import { requireApprovedWorker, requireAuth } from "../middleware/auth.js";
+import { requireApprovedWorker, requireAuth, requireRole } from "../middleware/auth.js";
 import { appSettings, workerDues } from "../lib/booking.js";
 import { syncPublicWorker } from "../lib/workers.js";
 import { emailLayout, notify, sendMail } from "../lib/notify.js";
@@ -328,6 +328,7 @@ async function fulfillCommission({ orderId, paymentId, commissionId, workerId })
 paymentRouter.post(
   "/subscription/order",
   requireAuth,
+  requireRole("customer"),
   asyncHandler(async (req, res) => {
     assertOnlinePayments();
     const { plan } = orderSchema.parse(req.body || {});
@@ -404,6 +405,7 @@ paymentRouter.post(
 paymentRouter.post(
   "/subscription/verify",
   requireAuth,
+  requireRole("customer"),
   asyncHandler(async (req, res) => {
     const body = verifySchema.parse(req.body || {});
     assertSignature(body);

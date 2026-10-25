@@ -11,7 +11,7 @@ import { upload } from "../middleware/upload.js";
 import { sessionSchema, profileSchema, workerProfileSchema } from "../lib/validate.js";
 import { uploadImage } from "../lib/media.js";
 import { notify, notifyAdmins } from "../lib/notify.js";
-import { docToJson, normalizePhone } from "../lib/utils.js";
+import { docToJson, normalizePhone, stripKycRefs } from "../lib/utils.js";
 import { WORKER_STATUS } from "../lib/booking.js";
 
 export const authRouter = Router();
@@ -28,7 +28,7 @@ async function loadProfile(uid) {
   ]);
   return {
     profile: docToJson(userSnap),
-    worker: docToJson(workerSnap),
+    worker: stripKycRefs(docToJson(workerSnap)),
     isAdmin: adminSnap.exists,
   };
 }
@@ -86,8 +86,10 @@ authRouter.post(
     const role = body.role === "worker" ? "worker" : "customer";
     const name = body.name || req.user.name || defaultName(email);
     const phone = body.phone ? normalizePhone(body.phone) : "";
+    const existingWorkerSnap =
+      role === "worker" ? await collections.workers.doc(uid).get() : null;
 
-    if (role === "worker") {
+    if (role === "worker" && !existingWorkerSnap?.exists) {
       if (!body.service || !body.area) {
         throw new ApiError(
           422,
@@ -117,7 +119,7 @@ authRouter.post(
 
     await userRef.set(userDoc);
 
-    if (role === "worker") {
+    if (role === "worker" && !existingWorkerSnap?.exists) {
       const workerDoc = {
         uid,
         name,
@@ -128,6 +130,9 @@ authRouter.post(
         serviceKey: body.serviceKey || body.service,
         pricePerWork: Math.max(0, Number(body.pricePerWork) || 199),
         area: body.area,
+        areaName: body.areaName || body.area,
+        city: body.city || "",
+        state: body.state || "",
         lat: Number.isFinite(Number(body.lat)) ? Number(body.lat) : null,
         lng: Number.isFinite(Number(body.lng)) ? Number(body.lng) : null,
         online: false,
@@ -138,7 +143,6 @@ authRouter.post(
         premiumUntil: null,
         upiId: "",
         bio: "",
-        kycPath: "",
         kycStatus: "not_submitted",
         dues: 0,
         radiusKm: 25,
@@ -301,6 +305,9 @@ authRouter.post(
         serviceKey: body.serviceKey || body.service,
         pricePerWork: Math.max(0, Number(body.pricePerWork) || 199),
         area: body.area,
+        areaName: body.areaName || body.area,
+        city: body.city || userSnap.data().city || "",
+        state: body.state || "",
         lat: Number.isFinite(Number(body.lat)) ? Number(body.lat) : null,
         lng: Number.isFinite(Number(body.lng)) ? Number(body.lng) : null,
         status: WORKER_STATUS.PENDING,

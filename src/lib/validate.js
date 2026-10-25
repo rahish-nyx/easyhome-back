@@ -57,9 +57,11 @@ export const sessionSchema = z.object({
   name: z.string().trim().min(2).max(80).optional(),
   phone: phone.optional(),
   city: z.string().trim().max(80).optional(),
+  state: z.string().trim().max(80).optional(),
   service: z.string().trim().max(60).optional(),
   serviceKey: z.string().trim().max(40).optional(),
   area: z.string().trim().max(120).optional(),
+  areaName: z.string().trim().max(120).optional(),
   pricePerWork: z.coerce.number().int().min(0).max(100000).optional(),
   lat: coord.nullable().optional(),
   lng: coord.nullable().optional(),
@@ -96,6 +98,9 @@ export const workerProfileSchema = z.object({
   service: z.string().trim().max(60).optional(),
   serviceKey: z.string().trim().max(40).optional(),
   area: z.string().trim().max(120).optional(),
+  areaName: z.string().trim().max(120).optional(),
+  city: z.string().trim().max(80).optional(),
+  state: z.string().trim().max(80).optional(),
   bio: z.string().trim().max(400).optional(),
   pricePerWork: z.coerce.number().int().min(0).max(100000).optional(),
   upiId: z.string().trim().max(80).optional(),
@@ -113,6 +118,7 @@ export const bookingSchema = z.object({
   serviceKey: z.string().trim().min(2).max(40).optional(),
   description: z.string().trim().min(10).max(600),
   area: z.string().trim().min(2).max(160),
+  areaName: z.string().trim().max(120).optional(),
   city: z.string().trim().max(80).optional(),
   state: z.string().trim().max(80).optional(),
   lat: coord.nullable().optional(),
@@ -171,11 +177,34 @@ export const adminWorkerReviewSchema = z.object({
   reason: z.string().trim().max(300).optional(),
 });
 
+export const broadcastSchema = z.object({
+  title: z.string().trim().min(2).max(90),
+  body: z.string().trim().min(2).max(400),
+  link: z.string().trim().max(200).optional().default(""),
+  audience: z.enum(["all", "customers", "workers", "specific"]).default("all"),
+  userIds: z.array(z.string().trim().min(1).max(120)).max(500).optional().default([]),
+});
+
+export const callRequestUpdateSchema = z.object({
+  action: z.enum(["done", "cancel"]),
+});
+
+const localAreaSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  lat: coord.nullable().optional(),
+  lng: coord.nullable().optional(),
+});
+
 export const citySchema = z.object({
   name: z.string().trim().min(2).max(80),
+  state: z.string().trim().max(80).optional().default(""),
   lat: coord,
   lng: coord,
   radiusKm: z.coerce.number().min(1).max(200).default(10),
+  localAreas: z
+    .array(z.union([z.string().trim().min(1).max(120), localAreaSchema]))
+    .max(300)
+    .optional(),
   active: formBoolean.default(true),
 });
 
@@ -205,6 +234,7 @@ export const promoSchema = z.object({
 export const serviceZoneSchema = z.object({
   state: z.string().trim().min(2).max(80),
   cityName: z.string().trim().min(2).max(80),
+  areaName: z.string().trim().max(120).optional().default(""),
   latitude: z.coerce.number().min(-90).max(90),
   longitude: z.coerce.number().min(-180).max(180),
   radiusKm: z.coerce.number().min(0.5).max(200).default(10),

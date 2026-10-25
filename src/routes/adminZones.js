@@ -79,12 +79,14 @@ adminZonesRouter.post(
         String(zone.cityName || "").trim().toLowerCase() ===
           body.cityName.trim().toLowerCase() &&
         String(zone.state || "").trim().toLowerCase() ===
-          body.state.trim().toLowerCase(),
+          body.state.trim().toLowerCase() &&
+        String(zone.areaName || "").trim().toLowerCase() ===
+          String(body.areaName || "").trim().toLowerCase(),
     );
     if (duplicate) {
       throw new ApiError(
         409,
-        "An operating zone already exists for this city and state.",
+        "An operating zone already exists for this city, state and local area.",
         "DUPLICATE_ZONE",
       );
     }

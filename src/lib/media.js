@@ -101,6 +101,19 @@ export async function uploadImage(buffer, { folder, isPublic = true } = {}) {
           resource_type: "image",
           unique_filename: true,
           overwrite: false,
+          transformation:
+            safeFolder === "avatars"
+              ? [
+                  {
+                    width: 512,
+                    height: 512,
+                    crop: "fill",
+                    gravity: "face",
+                    quality: "auto:good",
+                    fetch_format: "auto",
+                  },
+                ]
+              : undefined,
         },
         (error, uploaded) => {
           if (error) reject(error);

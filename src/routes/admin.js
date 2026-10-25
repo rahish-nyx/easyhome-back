@@ -3,9 +3,7 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { auth, collections, db } from "../config/firebase.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { requireAdmin } from "../middleware/auth.js";
-import { streamPrivateObject } from "../lib/media.js";
 import { emailLayout, notify, sendMail } from "../lib/notify.js";
-import { fetchTelegramDocument } from "../lib/telegram.js";
 import { approveWorker, syncPublicWorker } from "../lib/workers.js";
 import {
   appSettings,
@@ -15,12 +13,16 @@ import {
 import {
   adminUserUpdateSchema,
   adminWorkerReviewSchema,
+  broadcastSchema,
+  callRequestUpdateSchema,
 } from "../lib/validate.js";
+import { endChatSession } from "../lib/chat.js";
 import {
   docToJson,
   docsToJson,
   lastMonths,
   monthKey,
+  stripKycRefs,
   toDate,
 } from "../lib/utils.js";
 import { env } from "../config/env.js";
@@ -148,7 +150,7 @@ adminRouter.get(
       },
       charts: { months },
       recentBookings: docsToJson(recentBookingsSnap),
-      pendingWorkerList: docsToJson(pendingWorkersSnap),
+      pendingWorkerList: docsToJson(pendingWorkersSnap).map(stripKycRefs),
       recentUsers: docsToJson(recentUsersSnap),
     });
   }),
@@ -161,7 +163,8 @@ adminRouter.get(
   asyncHandler(async (req, res) => {
     const role = req.query.role ? String(req.query.role) : "";
     const q = req.query.q ? String(req.query.q).toLowerCase() : "";
-    const snap = await collections.users.orderBy("createdAt", "desc").limit(150).get();
+    const limit = Math.min(Math.max(Number(req.query.limit) || 150, 1), 1000);
+    const snap = await collections.users.orderBy("createdAt", "desc").limit(limit).get();
     let users = docsToJson(snap);
     if (role) users = users.filter((user) => user.role === role);
     if (q) {
@@ -213,9 +216,9 @@ adminRouter.get(
     let queryRef = collections.workers;
     if (status !== "all") queryRef = queryRef.where("status", "==", status);
     const snap = await queryRef.limit(150).get();
-    const workers = docsToJson(snap).sort(
-      (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0),
-    );
+    const workers = docsToJson(snap)
+      .map(stripKycRefs)
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
     res.json({ workers });
   }),
 );
@@ -332,54 +335,6 @@ adminRouter.patch(
     });
     await audit(req.user.uid, `worker.kyc.${action}`, { uid: req.params.id });
     res.json({ ok: true });
-  }),
-);
-
-adminRouter.get(
-  "/workers/:id/kyc-file",
-  asyncHandler(async (req, res) => {
-    const snap = await collections.workers.doc(req.params.id).get();
-    if (!snap.exists) throw new ApiError(404, "Worker not found.", "NOT_FOUND");
-
-    const {
-      kycPath,
-      kycTelegramFileId,
-      kycTelegramMimeType,
-      kycTelegramFileName,
-    } = snap.data();
-
-    if (kycTelegramFileId) {
-      const document = await fetchTelegramDocument(kycTelegramFileId);
-      if (!document.ok) {
-        throw new ApiError(
-          502,
-          "This ID could not be loaded from Telegram. Please check the admin chat or try again.",
-          "KYC_DOWNLOAD_FAILED",
-          undefined,
-          true,
-        );
-      }
-
-      const safeName =
-        String(kycTelegramFileName || document.name || "kyc-document")
-          .replace(/[^a-z0-9._-]+/gi, "_")
-          .replace(/^_+|_+$/g, "") || "kyc-document";
-      const contentType =
-        kycTelegramMimeType ||
-        (document.contentType && document.contentType !== "application/octet-stream"
-          ? document.contentType
-          : "application/octet-stream");
-
-      res.set("Content-Type", contentType);
-      res.set("Cache-Control", "private, no-store");
-      res.set("Content-Disposition", `inline; filename="${safeName}"`);
-      return res.send(document.buffer);
-    }
-
-    if (!kycPath) {
-      throw new ApiError(404, "No KYC document uploaded.", "KYC_MISSING");
-    }
-    return streamPrivateObject(kycPath, res);
   }),
 );
 
@@ -600,6 +555,117 @@ adminRouter.post(
     });
 
     res.status(201).json({ ok: true, messageId: messageRef.id });
+  }),
+);
+
+adminRouter.post(
+  "/chats/:uid/end",
+  asyncHandler(async (req, res) => {
+    const deleted = await endChatSession(req.params.uid);
+    await audit(req.user.uid, "chat.end", { uid: req.params.uid, deleted });
+    res.json({ ok: true, deleted, message: "Support session ended and messages deleted." });
+  }),
+);
+
+adminRouter.get(
+  "/call-requests",
+  asyncHandler(async (req, res) => {
+    const status = req.query.status ? String(req.query.status) : "pending";
+    let queryRef = collections.callRequests;
+    if (status !== "all") queryRef = queryRef.where("status", "==", status);
+    const snap = await queryRef.limit(60).get();
+    const requests = docsToJson(snap).sort(
+      (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0),
+    );
+    res.json({ requests });
+  }),
+);
+
+adminRouter.patch(
+  "/call-requests/:id",
+  asyncHandler(async (req, res) => {
+    const body = callRequestUpdateSchema.parse(req.body || {});
+    const ref = collections.callRequests.doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists) throw new ApiError(404, "Call request not found.", "NOT_FOUND");
+    await ref.set(
+      {
+        status: body.action === "done" ? "done" : "cancelled",
+        handledBy: req.user.uid,
+        handledAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+    await audit(req.user.uid, `call_request.${body.action}`, { requestId: req.params.id });
+    res.json({ ok: true });
+  }),
+);
+
+adminRouter.post(
+  "/notifications/broadcast",
+  asyncHandler(async (req, res) => {
+    const body = broadcastSchema.parse(req.body || {});
+    const [usersSnap, workersSnap] = await Promise.all([
+      collections.users.limit(1000).get(),
+      collections.workers.limit(1000).get(),
+    ]);
+
+    const users = usersSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const workers = workersSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const workerIds = new Set(workers.map((worker) => worker.id));
+    const recipients = new Set();
+
+    if (body.audience === "specific") {
+      body.userIds.forEach((id) => recipients.add(id));
+    } else {
+      users.forEach((user) => {
+        const role = user.role || (workerIds.has(user.id) ? "worker" : "customer");
+        if (body.audience === "all" && role !== "admin") recipients.add(user.id);
+        else if (body.audience === "customers" && role === "customer") recipients.add(user.id);
+        else if (body.audience === "workers" && role === "worker") recipients.add(user.id);
+      });
+      if (body.audience === "all" || body.audience === "workers") {
+        workers.forEach((worker) => recipients.add(worker.id));
+      }
+    }
+
+    if (!recipients.size) {
+      throw new ApiError(
+        422,
+        "No recipients matched that audience.",
+        "NO_RECIPIENTS",
+        undefined,
+        true,
+      );
+    }
+
+    const ids = [...recipients];
+    for (let index = 0; index < ids.length; index += 400) {
+      const batch = db.batch();
+      ids.slice(index, index + 400).forEach((userId) => {
+        const ref = collections.notifications.doc();
+        batch.set(ref, {
+          userId,
+          title: body.title,
+          body: body.body,
+          type: "announcement",
+          link: body.link || "",
+          read: false,
+          broadcast: true,
+          sentBy: req.user.uid,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      });
+      await batch.commit();
+    }
+
+    await audit(req.user.uid, "notification.broadcast", {
+      audience: body.audience,
+      recipients: ids.length,
+      title: body.title,
+    });
+    res.status(201).json({ ok: true, sent: ids.length });
   }),
 );
 

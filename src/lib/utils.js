@@ -33,6 +33,27 @@ export function docsToJson(snapshot) {
   return snapshot.docs.map((doc) => docToJson(doc));
 }
 
+const KYC_REFERENCE_KEYS = [
+  "kycPath",
+  "kycTelegramFileId",
+  "kycTelegramFileUniqueId",
+  "kycTelegramMessageId",
+  "kycTelegramChatId",
+  "kycTelegramFileName",
+  "kycTelegramMimeType",
+];
+
+/**
+ * KYC documents are delivered only to Telegram. Strip every legacy file or
+ * message reference before a worker object leaves the API.
+ */
+export function stripKycRefs(worker) {
+  if (!worker) return worker;
+  const clean = { ...worker };
+  for (const key of KYC_REFERENCE_KEYS) delete clean[key];
+  return clean;
+}
+
 export function toDate(value) {
   if (!value) return null;
   if (typeof value.toDate === "function") return value.toDate();

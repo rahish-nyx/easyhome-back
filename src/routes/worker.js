@@ -19,6 +19,7 @@ import {
   premiumActive,
 } from "../lib/booking.js";
 import { distanceMeters, hasCoords } from "../lib/geo.js";
+import { workerMatchesBooking } from "../lib/location.js";
 import { notify, notifyAdmins, sendMail, emailLayout } from "../lib/notify.js";
 import {
   commissionTelegramMessage,
@@ -33,7 +34,7 @@ import {
   phaseForBooking,
   phaseHistoryEntry,
 } from "../lib/tracking.js";
-import { docToJson, lastMonths, monthKey, toDate } from "../lib/utils.js";
+import { docToJson, lastMonths, monthKey, stripKycRefs, toDate } from "../lib/utils.js";
 
 export const workerRouter = Router();
 
@@ -62,7 +63,17 @@ workerRouter.patch(
     const { snap, worker } = await loadWorker(req.user.uid);
 
     const updates = { updatedAt: FieldValue.serverTimestamp() };
-    for (const key of ["name", "service", "serviceKey", "area", "bio", "upiId"]) {
+    for (const key of [
+      "name",
+      "service",
+      "serviceKey",
+      "area",
+      "areaName",
+      "city",
+      "state",
+      "bio",
+      "upiId",
+    ]) {
       if (body[key] !== undefined) updates[key] = body[key];
     }
     if (body.phone !== undefined) updates.phone = body.phone;
@@ -84,7 +95,17 @@ workerRouter.patch(
       const publicUpdates = {
         updatedAt: FieldValue.serverTimestamp(),
       };
-      for (const key of ["name", "service", "serviceKey", "area", "photoPath", "online"]) {
+      for (const key of [
+        "name",
+        "service",
+        "serviceKey",
+        "area",
+        "areaName",
+        "city",
+        "state",
+        "photoPath",
+        "online",
+      ]) {
         if (updates[key] !== undefined) publicUpdates[key] = updates[key];
       }
       if (updates.pricePerWork !== undefined) publicUpdates.pricePerWork = updates.pricePerWork;
@@ -94,7 +115,7 @@ workerRouter.patch(
     }
 
     const fresh = await snap.ref.get();
-    res.json({ worker: docToJson(fresh) });
+    res.json({ worker: stripKycRefs(docToJson(fresh)) });
   }),
 );
 
@@ -161,6 +182,14 @@ workerRouter.post(
       }
       if (booking.preferredWorkerId && booking.preferredWorkerId !== uid) {
         throw new ApiError(403, "This job was reserved for another worker.", "JOB_RESERVED");
+      }
+
+      if (!workerMatchesBooking(worker, booking)) {
+        throw new ApiError(
+          403,
+          "This job is outside your service area. Jobs are limited to your city and local area.",
+          "OUT_OF_SERVICE_AREA",
+        );
       }
 
       if (hasCoords(worker) && hasCoords(booking.location)) {
@@ -854,17 +883,19 @@ workerRouter.post(
 
     await collections.workers.doc(req.user.uid).set(
       {
-        // Clear legacy Firebase Storage references: new KYC files live in
-        // Telegram only and are streamed back to admins through the API.
-        kycPath: "",
+        // Zero-storage KYC: the document goes only to Telegram. We keep just
+        // non-document status metadata so no file reference survives here.
+        kycPath: FieldValue.delete(),
+        kycTelegramFileId: FieldValue.delete(),
+        kycTelegramFileUniqueId: FieldValue.delete(),
+        kycTelegramMessageId: FieldValue.delete(),
+        kycTelegramChatId: FieldValue.delete(),
+        kycTelegramFileName: FieldValue.delete(),
+        kycTelegramMimeType: FieldValue.delete(),
         kycDelivery: "telegram",
-        kycTelegramFileId: delivery.fileId || "",
-        kycTelegramFileUniqueId: delivery.fileUniqueId || "",
-        kycTelegramMessageId: delivery.messageId || null,
-        kycTelegramChatId: delivery.chatId || "",
-        kycTelegramFileName: delivery.fileName || "",
-        kycTelegramMimeType: delivery.mimeType || "",
         kycStatus: "pending",
+        kycRejectionReason: FieldValue.delete(),
+        kycReviewedAt: FieldValue.delete(),
         kycSubmittedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       },

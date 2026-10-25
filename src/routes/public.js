@@ -71,10 +71,11 @@ publicRouter.get(
     const lng = Number(req.query.lng);
     const cityName = req.query.city ? String(req.query.city) : "";
     const state = req.query.state ? String(req.query.state) : "";
+    const areaName = req.query.areaName ? String(req.query.areaName) : "";
     const zones = await activeServiceZones();
 
     if (zones.length) {
-      const result = evaluateServiceZones(zones, { lat, lng, cityName, state });
+      const result = evaluateServiceZones(zones, { lat, lng, cityName, state, areaName });
       if (!Number.isFinite(lat) && !Number.isFinite(lng) && !cityName) {
         return res.status(400).json({
           allowed: false,
@@ -82,23 +83,31 @@ publicRouter.get(
           message: "Share your location or choose a city so we can check coverage.",
         });
       }
+      const nearest = result.nearest?.zone || null;
       return res.json({
         allowed: result.allowed,
         configured: true,
-        city: result.zone?.cityName || cityName || null,
-        state: result.zone?.state || state || null,
-        cityId: result.zone?.id || null,
+        // Even when the point is outside every zone, return the nearest active
+        // city/area so the client can show a useful reverse-geocoded label.
+        city:
+          result.zone?.cityName || nearest?.cityName || cityName || null,
+        state: result.zone?.state || nearest?.state || state || null,
+        areaName:
+          result.zone?.areaName || nearest?.areaName || areaName || null,
+        cityId: result.zone?.id || nearest?.id || null,
         zone: result.zone
           ? {
               id: result.zone.id,
               cityName: result.zone.cityName,
               state: result.zone.state,
+              areaName: result.zone.areaName || "",
               radiusKm: result.zone.radiusKm,
               latitude: result.zone.latitude,
               longitude: result.zone.longitude,
+              isActive: result.zone.isActive !== false,
             }
           : null,
-        nearestZone: result.nearest?.zone?.cityName || null,
+        nearestZone: nearest?.cityName || null,
         distanceMeters: result.distanceMeters,
         radiusKm: result.zone?.radiusKm || null,
         message: result.allowed
@@ -119,6 +128,8 @@ publicRouter.get(
       allowed: result.allowed,
       configured: false,
       city: result.city?.name || null,
+      state: result.city?.state || state || null,
+      areaName: areaName || null,
       cityId: result.city?.id || null,
       nearestZone: result.nearest?.city?.name || null,
       distanceMeters: result.distanceMeters,

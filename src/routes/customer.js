@@ -2,7 +2,7 @@ import { Router } from "express";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { collections, db } from "../config/firebase.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
-import { requireAuth, requireVerified } from "../middleware/auth.js";
+import { requireAuth, requireRole, requireVerified } from "../middleware/auth.js";
 import { upload } from "../middleware/upload.js";
 import {
   bookingSchema,
@@ -13,11 +13,18 @@ import {
   reviewSchema,
   subscriptionRequestSchema,
 } from "../lib/validate.js";
-import { appSettings, commissionFor, premiumActive } from "../lib/booking.js";
+import {
+  appSettings,
+  commissionFor,
+  customerMembershipActive,
+  premiumActive,
+} from "../lib/booking.js";
 import { nearestServiceArea } from "../lib/geo.js";
+import { workerMatchesBooking } from "../lib/location.js";
 import { uploadImage } from "../lib/media.js";
 import { notify, notifyAdmins } from "../lib/notify.js";
 import { sendTelegramAlert, subscriptionTelegramMessage } from "../lib/telegram.js";
+import { endChatSession } from "../lib/chat.js";
 import { OUT_OF_ZONE_MESSAGE, validateBookingZone } from "../lib/zones.js";
 import {
   PHASE_META,
@@ -56,6 +63,7 @@ function planMonths(plan) {
 customerRouter.post(
   "/bookings",
   requireAuth,
+  requireRole("customer"),
   requireVerified,
   upload.single("image"),
   asyncHandler(async (req, res) => {
@@ -90,6 +98,7 @@ customerRouter.post(
       lng: hasCoords ? Number(body.lng) : null,
       cityName: body.city,
       state: body.state,
+      areaName: body.areaName,
     });
 
     if (!zoneCheck.allowed) {
@@ -126,6 +135,14 @@ customerRouter.post(
     const customerSnap = await collections.users.doc(uid).get();
     const customer = customerSnap.exists ? customerSnap.data() : {};
 
+    const bookingBudget = Math.round(body.budget);
+    const membershipActive = customerMembershipActive(customer);
+    const urgentFee =
+      body.urgency === "urgent" && !membershipActive
+        ? Math.round(bookingBudget * 0.1)
+        : 0;
+    const customerTotal = bookingBudget + urgentFee;
+
     const bookingRef = collections.bookings.doc();
     const bookingId = bookingRef.id;
     const now = FieldValue.serverTimestamp();
@@ -151,9 +168,14 @@ customerRouter.post(
       },
       cityName: body.city || zoneCheck.zone?.cityName || "",
       stateName: body.state || zoneCheck.zone?.state || "",
+      areaName: body.areaName || zoneCheck.zone?.areaName || "",
       serviceZoneId: zoneCheck.zone?.id || null,
-      serviceZoneName: zoneCheck.zone?.cityName || null,
-      budget: Math.round(body.budget),
+      serviceZoneName:
+        zoneCheck.zone?.areaName || zoneCheck.zone?.cityName || null,
+      budget: bookingBudget,
+      customerTotal,
+      urgentFee,
+      urgentFeeWaived: body.urgency === "urgent" && membershipActive,
       urgency: body.urgency,
       status: "pending",
       activeJob: false,
@@ -188,6 +210,9 @@ customerRouter.post(
         commission: 0,
         workerReceives: null,
         confirmedAt: null,
+        urgentFee,
+        urgentFeeWaived: body.urgency === "urgent" && membershipActive,
+        customerTotal,
       },
       paymentMode: null,
       paidAt: null,
@@ -213,9 +238,15 @@ customerRouter.post(
       serviceKey: service.key,
       description: body.description.slice(0, 180),
       area: body.area,
+      cityName: bookingDoc.cityName,
+      stateName: bookingDoc.stateName,
+      areaName: bookingDoc.areaName,
+      serviceZoneId: bookingDoc.serviceZoneId,
       lat: roundedLat,
       lng: roundedLng,
-      budget: Math.round(body.budget),
+      budget: bookingBudget,
+      customerTotal,
+      urgentFee,
       urgency: body.urgency,
       status: "open",
       workerId: null,
@@ -227,20 +258,28 @@ customerRouter.post(
         service: service.name,
         serviceKey: service.key,
         area: body.area,
-        budget: Math.round(body.budget),
+        cityName: bookingDoc.cityName,
+        stateName: bookingDoc.stateName,
+        areaName: bookingDoc.areaName,
+        budget: bookingBudget,
+        customerTotal,
+        urgentFee,
         createdAt: now,
       });
     }
     await batch.commit();
 
-    // Notify matching approved workers (preferred worker first).
+    // Notify only approved workers in the booking's exact city/local area.
+    // Workers must never receive cross-region job alerts.
     const workersSnap = await collections.workers
       .where("serviceKey", "==", service.key)
-      .limit(50)
       .get();
 
     const candidates = workersSnap.docs
-      .filter((doc) => doc.data().status === "approved")
+      .filter((doc) => {
+        const worker = doc.data();
+        return worker.status === "approved" && workerMatchesBooking(worker, bookingDoc);
+      })
       .sort((a, b) => {
         const aPreferred = a.id === body.preferredWorkerId ? -1 : 0;
         const bPreferred = b.id === body.preferredWorkerId ? -1 : 0;
@@ -255,7 +294,7 @@ customerRouter.post(
         notifBatch.set(ref, {
           userId: worker.id,
           title: body.urgency === "urgent" ? "Urgent job near you" : "New job near you",
-          body: `${service.name} · ${body.area} · ₹${Math.round(body.budget)}`,
+          body: `${service.name} · ${bookingDoc.areaName || body.area} · ₹${customerTotal}`,
           type: "new_job",
           link: `/worker?job=${bookingId}`,
           read: false,
@@ -273,6 +312,7 @@ customerRouter.post(
 customerRouter.patch(
   "/bookings/:id/offer",
   requireAuth,
+  requireRole("customer"),
   asyncHandler(async (req, res) => {
     const { price } = offerSchema.parse(req.body || {});
     const ref = collections.bookings.doc(req.params.id);
@@ -319,6 +359,7 @@ customerRouter.patch(
 customerRouter.patch(
   "/bookings/:id/accept-price",
   requireAuth,
+  requireRole("customer"),
   asyncHandler(async (req, res) => {
     const uid = req.user.uid;
     const ref = collections.bookings.doc(req.params.id);
@@ -385,6 +426,7 @@ customerRouter.patch(
 customerRouter.patch(
   "/bookings/:id/cancel",
   requireAuth,
+  requireRole("customer"),
   asyncHandler(async (req, res) => {
     const { reason } = cancelSchema.parse(req.body || {});
     const ref = collections.bookings.doc(req.params.id);
@@ -450,6 +492,7 @@ customerRouter.patch(
 customerRouter.patch(
   "/bookings/:id/payment",
   requireAuth,
+  requireRole("customer"),
   asyncHandler(async (req, res) => {
     const { mode, reference } = paymentSchema.parse(req.body || {});
     const settings = await appSettings();
@@ -538,6 +581,7 @@ customerRouter.patch(
 customerRouter.post(
   "/bookings/:id/review",
   requireAuth,
+  requireRole("customer"),
   asyncHandler(async (req, res) => {
     const { stars, comment } = reviewSchema.parse(req.body || {});
     const bookingRef = collections.bookings.doc(req.params.id);
@@ -611,6 +655,7 @@ customerRouter.post(
 customerRouter.post(
   "/subscriptions",
   requireAuth,
+  requireRole("customer"),
   asyncHandler(async (req, res) => {
     throw new ApiError(
       410,
@@ -744,6 +789,7 @@ customerRouter.post(
           lastAt: now,
           unreadForAdmin: FieldValue.increment(1),
           unreadForUser: 0,
+          sessionStatus: "open",
           updatedAt: now,
           createdAt: user.createdAt || now,
         },
@@ -752,6 +798,65 @@ customerRouter.post(
     });
 
     res.status(201).json({ ok: true, messageId: messageRef.id });
+  }),
+);
+
+customerRouter.post(
+  "/chat/end",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const deleted = await endChatSession(req.user.uid);
+    res.json({ ok: true, deleted, message: "Support session ended and messages deleted." });
+  }),
+);
+
+customerRouter.post(
+  "/chat/request-call",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const [userSnap, workerSnap] = await Promise.all([
+      collections.users.doc(req.user.uid).get(),
+      collections.workers.doc(req.user.uid).get(),
+    ]);
+    const user = userSnap.exists ? userSnap.data() : {};
+    const worker = workerSnap.exists ? workerSnap.data() : {};
+    const phone = normalizePhone(user.phone || worker.phone || "");
+    const name = user.name || worker.name || req.user.name || "EasyHome user";
+    const role = user.role || (workerSnap.exists ? "worker" : "customer");
+
+    if (!/^[6-9]\d{9}$/.test(phone)) {
+      throw new ApiError(
+        422,
+        "Add a valid mobile number to your profile before requesting a call.",
+        "PHONE_REQUIRED",
+      );
+    }
+
+    const ref = collections.callRequests.doc();
+    await ref.set({
+      userId: req.user.uid,
+      name,
+      phone,
+      role,
+      email: user.email || req.user.email || "",
+      status: "pending",
+      source: "live_chat",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    await notifyAdmins({
+      title: "Call request",
+      body: `${name} (${phone}) requested a call from live support.`,
+      type: "call_request",
+      link: "/admin/chats",
+    });
+
+    sendTelegramAlert(
+      `EasyHome call request\n${name} · ${role}\nPhone: ${phone}\nOpen Support in the admin console.`,
+    ).catch(() => {});
+
+    res.status(201).json({ ok: true, requestId: ref.id });
   }),
 );
 
@@ -780,6 +885,21 @@ customerRouter.patch(
   }),
 );
 
+customerRouter.delete(
+  "/notifications/:id",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const ref = collections.notifications.doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists) throw new ApiError(404, "Notification not found.", "NOT_FOUND");
+    if (snap.data().userId !== req.user.uid) {
+      throw new ApiError(403, "This notification belongs to another account.", "FORBIDDEN");
+    }
+    await ref.delete();
+    res.json({ ok: true });
+  }),
+);
+
 customerRouter.patch(
   "/notifications/read",
   requireAuth,
@@ -803,6 +923,7 @@ customerRouter.patch(
 customerRouter.get(
   "/bookings/:id/tracking",
   requireAuth,
+  requireRole("customer"),
   asyncHandler(async (req, res) => {
     const bookingSnap = await collections.bookings.doc(req.params.id).get();
     if (!bookingSnap.exists) {
@@ -858,6 +979,7 @@ customerRouter.get(
 customerRouter.get(
   "/bookings/:id/contact",
   requireAuth,
+  requireRole("customer"),
   asyncHandler(async (req, res) => {
     const bookingSnap = await collections.bookings.doc(req.params.id).get();
     if (!bookingSnap.exists) throw new ApiError(404, "Booking not found.", "BOOKING_NOT_FOUND");

@@ -8,99 +8,8 @@ import { FieldValue } from "firebase-admin/firestore";
 import { auth, collections } from "../src/config/firebase.js";
 import { env } from "../src/config/env.js";
 
-const services = [
-  {
-    key: "cleaning",
-    name: "Home Cleaning",
-    icon: "sparkles",
-    description: "Deep cleaning, bathrooms, kitchens and full-home refresh.",
-    fromPrice: 299,
-    order: 1,
-  },
-  {
-    key: "plumbing",
-    name: "Plumbing",
-    icon: "wrench",
-    description: "Leaks, taps, tanks, pipelines and bathroom fittings.",
-    fromPrice: 199,
-    order: 2,
-  },
-  {
-    key: "electrical",
-    name: "Electrical",
-    icon: "zap",
-    description: "Wiring, fans, lights, switches, MCB and inverters.",
-    fromPrice: 199,
-    order: 3,
-  },
-  {
-    key: "carpentry",
-    name: "Carpentry",
-    icon: "hammer",
-    description: "Doors, hinges, furniture repair and custom fittings.",
-    fromPrice: 249,
-    order: 4,
-  },
-  {
-    key: "appliance",
-    name: "Appliance Repair",
-    icon: "plug-zap",
-    description: "AC, fridge, washing machine, microwave and geyser.",
-    fromPrice: 299,
-    order: 5,
-  },
-  {
-    key: "salon",
-    name: "Salon & Beauty",
-    icon: "scissors",
-    description: "At-home haircuts, grooming, facials and bridal prep.",
-    fromPrice: 299,
-    order: 6,
-  },
-  {
-    key: "painting",
-    name: "Painting",
-    icon: "paintbrush",
-    description: "Room painting, touch-ups, waterproofing and texture.",
-    fromPrice: 499,
-    order: 7,
-  },
-  {
-    key: "pest",
-    name: "Pest Control",
-    icon: "bug",
-    description: "Cockroaches, termites, mosquitoes and rodent control.",
-    fromPrice: 399,
-    order: 8,
-  },
-  {
-    key: "moving",
-    name: "Packers & Movers",
-    icon: "truck",
-    description: "Local shifting, packing, loading and safe transport.",
-    fromPrice: 999,
-    order: 9,
-  },
-  {
-    key: "tutoring",
-    name: "Home Tutoring",
-    icon: "graduation-cap",
-    description: "Verified tutors for school, maths, science and languages.",
-    fromPrice: 349,
-    order: 10,
-  },
-];
-
-const cities = [
-  { id: "indore", name: "Indore", lat: 22.7196, lng: 75.8577, radiusKm: 30 },
-  { id: "bhopal", name: "Bhopal", lat: 23.2599, lng: 77.4126, radiusKm: 30 },
-  { id: "ujjain", name: "Ujjain", lat: 23.1765, lng: 75.7885, radiusKm: 25 },
-  { id: "dewas", name: "Dewas", lat: 22.9676, lng: 76.0534, radiusKm: 20 },
-  { id: "jaipur", name: "Jaipur", lat: 26.9124, lng: 75.7873, radiusKm: 35 },
-  { id: "pune", name: "Pune", lat: 18.5204, lng: 73.8567, radiusKm: 35 },
-  { id: "mumbai", name: "Mumbai", lat: 19.076, lng: 72.8777, radiusKm: 35 },
-  { id: "delhi", name: "Delhi", lat: 28.6139, lng: 77.209, radiusKm: 35 },
-];
+import { WORK_CATEGORIES } from "../src/lib/catalog.js";
+import { SEED_CITIES } from "../src/lib/cities.js";
 
 const serviceZones = [
   {
@@ -282,7 +191,7 @@ async function main() {
 
   const batch = [];
 
-  for (const service of services) {
+  for (const service of WORK_CATEGORIES) {
     await collections.services.doc(service.key).set(
       {
         ...service,
@@ -295,10 +204,11 @@ async function main() {
     batch.push(`service:${service.key}`);
   }
 
-  for (const city of cities) {
+  for (const city of SEED_CITIES) {
     await collections.cities.doc(city.id).set(
       {
         ...city,
+        localAreas: city.localAreas || [],
         active: true,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
@@ -317,6 +227,7 @@ async function main() {
     if (!existing.exists) {
       await ref.set({
         ...data,
+        areaName: data.areaName || "",
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       });
@@ -381,7 +292,7 @@ async function main() {
   );
 
   console.log(
-    `• ${services.length} services, ${cities.length} cities, ${serviceZones.length} service zones, ${promos.length} promos`,
+    `• ${WORK_CATEGORIES.length} services, ${SEED_CITIES.length} cities, ${serviceZones.length} service zones, ${promos.length} promos`,
   );
   console.log("• settings/app updated");
   console.log(`\nDone. ${batch.length} catalogue documents are ready.\n`);
