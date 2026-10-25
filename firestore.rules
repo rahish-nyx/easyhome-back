@@ -40,6 +40,9 @@ service cloud.firestore {
     match /promos/{promoId} {
       allow read: if true;
     }
+    match /footer_links/{footerLinkId} {
+      allow read: if true;
+    }
     match /settings/{docId} {
       allow read: if true;
     }
@@ -86,7 +89,12 @@ service cloud.firestore {
 
     // ---- Worker job feed (approved workers only) ----
     match /jobFeed/{jobId} {
-      allow read: if isAdmin() || isApprovedWorker();
+      allow read: if isAdmin()
+        || (
+          isApprovedWorker()
+          && signedIn()
+          && resource.data.workerId == request.auth.uid
+        );
     }
 
     // ---- Notifications ----

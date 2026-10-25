@@ -5,8 +5,7 @@ import compression from "compression";
 import rateLimit from "express-rate-limit";
 import { env } from "./config/env.js";
 import { attachUser } from "./middleware/auth.js";
-import { ApiError, asyncHandler, errorHandler, notFound } from "./middleware/errors.js";
-import { streamObject } from "./lib/media.js";
+import { errorHandler, notFound } from "./middleware/errors.js";
 import { authRouter } from "./routes/auth.js";
 import { publicRouter } from "./routes/public.js";
 import { customerRouter } from "./routes/customer.js";
@@ -104,21 +103,6 @@ app.use("/api", (req, res, next) => {
   }
   return writeLimiter(req, res, next);
 });
-
-/**
- * Public media proxy. Objects under private/kyc are blocked here and only
- * stream through the admin-only route.
- */
-app.get(
-  /^\/api\/media\/(.+)$/,
-  asyncHandler(async (req, res) => {
-    const objectPath = req.params[0];
-    if (!objectPath.startsWith("public/")) {
-      throw new ApiError(403, "This media is private.", "MEDIA_FORBIDDEN");
-    }
-    await streamObject(objectPath, res);
-  }),
-);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "easyhome-api", version: 2, time: new Date().toISOString() });

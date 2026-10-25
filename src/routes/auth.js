@@ -9,12 +9,18 @@ import {
 } from "../middleware/auth.js";
 import { upload } from "../middleware/upload.js";
 import { sessionSchema, profileSchema, workerProfileSchema } from "../lib/validate.js";
-import { uploadImage } from "../lib/media.js";
+import { uploadCloudinaryImage } from "../lib/media.js";
 import { notify, notifyAdmins } from "../lib/notify.js";
 import { docToJson, normalizePhone } from "../lib/utils.js";
 import { WORKER_STATUS } from "../lib/booking.js";
 
 export const authRouter = Router();
+
+function coordinate(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
 
 function defaultName(email = "") {
   return email.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -128,8 +134,11 @@ authRouter.post(
         serviceKey: body.serviceKey || body.service,
         pricePerWork: Math.max(0, Number(body.pricePerWork) || 199),
         area: body.area,
-        lat: Number.isFinite(Number(body.lat)) ? Number(body.lat) : null,
-        lng: Number.isFinite(Number(body.lng)) ? Number(body.lng) : null,
+        city: body.city || "",
+        state: body.state || "",
+        areaName: body.areaName || "",
+        lat: coordinate(body.lat),
+        lng: coordinate(body.lng),
         online: false,
         status: WORKER_STATUS.PENDING,
         rating: 0,
@@ -138,7 +147,6 @@ authRouter.post(
         premiumUntil: null,
         upiId: "",
         bio: "",
-        kycPath: "",
         kycStatus: "not_submitted",
         dues: 0,
         radiusKm: 25,
@@ -236,10 +244,17 @@ authRouter.post(
   upload.single("image"),
   asyncHandler(async (req, res) => {
     if (!req.file) throw new ApiError(400, "Choose an image to upload.", "FILE_REQUIRED");
-    const objectPath = await uploadImage(req.file.buffer, { folder: "avatars" });
+    const cloudinaryUpload = await uploadCloudinaryImage(req.file.buffer, {
+      folder: "avatars",
+    });
+    const objectPath = cloudinaryUpload.url;
 
     await collections.users.doc(req.user.uid).set(
-      { photoPath: objectPath, updatedAt: FieldValue.serverTimestamp() },
+      {
+        photoPath: objectPath,
+        photoCloudinaryId: cloudinaryUpload.publicId,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
       { merge: true },
     );
 
@@ -247,16 +262,23 @@ authRouter.post(
     const workerSnap = await workerRef.get();
     if (workerSnap.exists) {
       await workerRef.set(
-        { photoPath: objectPath, updatedAt: FieldValue.serverTimestamp() },
+        {
+          photoPath: objectPath,
+          photoCloudinaryId: cloudinaryUpload.publicId,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
         { merge: true },
       );
       await collections.workersPublic.doc(req.user.uid).set(
-        { photoPath: objectPath, updatedAt: FieldValue.serverTimestamp() },
+        {
+          photoPath: objectPath,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
         { merge: true },
       );
     }
 
-    res.json({ photoPath: objectPath });
+    res.json({ photoPath: objectPath, cloudinaryStored: true });
   }),
 );
 
@@ -301,8 +323,11 @@ authRouter.post(
         serviceKey: body.serviceKey || body.service,
         pricePerWork: Math.max(0, Number(body.pricePerWork) || 199),
         area: body.area,
-        lat: Number.isFinite(Number(body.lat)) ? Number(body.lat) : null,
-        lng: Number.isFinite(Number(body.lng)) ? Number(body.lng) : null,
+        city: body.city || "",
+        state: body.state || "",
+        areaName: body.areaName || "",
+        lat: coordinate(body.lat),
+        lng: coordinate(body.lng),
         status: WORKER_STATUS.PENDING,
         online: false,
         kycStatus: existing?.kycStatus || "not_submitted",

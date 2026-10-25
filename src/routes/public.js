@@ -1,18 +1,112 @@
 import { FieldValue } from "firebase-admin/firestore";
 import { Router } from "express";
+import { isIP } from "node:net";
 import { collections } from "../config/firebase.js";
-import { asyncHandler } from "../middleware/errors.js";
-import { appSettings } from "../lib/booking.js";
+import { ApiError, asyncHandler } from "../middleware/errors.js";
+import { appSettings, premiumActive } from "../lib/booking.js";
 import { nearestServiceArea } from "../lib/geo.js";
 import {
+  prioritizeWorkers,
+  workerDistanceKm,
+  workerMatchesLocation,
+} from "../lib/matching.js";
+import {
   OUT_OF_ZONE_MESSAGE,
-  activeServiceZones,
+  allServiceZones,
   evaluateServiceZones,
+  validateBookingZone,
 } from "../lib/zones.js";
 import { waitlistSchema } from "../lib/validate.js";
 import { docToJson, docsToJson } from "../lib/utils.js";
 
 export const publicRouter = Router();
+const reverseGeocodeCache = new Map();
+let reverseGeocodeQueue = Promise.resolve();
+let reverseGeocodeLastRequestAt = 0;
+
+function coordinate(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function publicClientIp(value) {
+  const ip = String(value || "").replace(/^::ffff:/i, "").split("%")[0];
+  const version = isIP(ip);
+  if (version === 4) {
+    const [a, b] = ip.split(".").map(Number);
+    if (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      a >= 224 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 198 && (b === 18 || b === 19))
+    ) {
+      return "";
+    }
+    return ip;
+  }
+  if (
+    version === 6 &&
+    !ip.startsWith("fc") &&
+    !ip.startsWith("fd") &&
+    !ip.startsWith("fe") &&
+    !ip.startsWith("ff") &&
+    ip !== "::" &&
+    ip !== "::1"
+  ) {
+    return ip;
+  }
+  return "";
+}
+
+async function fetchReverseGeocode(url) {
+  const previousRequest = reverseGeocodeQueue;
+  let release;
+  reverseGeocodeQueue = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previousRequest;
+
+  try {
+    const delay = Math.max(0, 1000 - (Date.now() - reverseGeocodeLastRequestAt));
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      reverseGeocodeLastRequestAt = Date.now();
+      const response = await fetch(url, {
+        headers: { "User-Agent": "EasyHome/1.0 (location lookup)" },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new ApiError(
+          502,
+          `Reverse geocoding provider returned ${response.status}.`,
+          "GEOCODING_PROVIDER_FAILED",
+        );
+      }
+      return await response.json();
+    } catch (error) {
+      if (error.name === "AbortError") {
+        throw new ApiError(
+          504,
+          "Reverse geocoding request timed out.",
+          "GEOCODING_TIMEOUT",
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  } finally {
+    release();
+  }
+}
 
 /**
  * Single round-trip bootstrap payload for the PWA shell.
@@ -21,11 +115,12 @@ export const publicRouter = Router();
 publicRouter.get(
   "/bootstrap",
   asyncHandler(async (_req, res) => {
-    const [servicesSnap, citiesSnap, zonesSnap, promosSnap, settings] = await Promise.all([
+    const [servicesSnap, citiesSnap, zonesSnap, promosSnap, footerLinksSnap, settings] = await Promise.all([
       collections.services.orderBy("order", "asc").get(),
       collections.cities.orderBy("name", "asc").get(),
       collections.serviceZones.get(),
       collections.promos.orderBy("order", "asc").get(),
+      collections.footerLinks.get(),
       appSettings(),
     ]);
 
@@ -35,11 +130,16 @@ publicRouter.get(
     );
     const cities = docsToJson(citiesSnap).filter((city) => city.active !== false);
     const zones = docsToJson(zonesSnap)
-      .filter((zone) => zone.isActive !== false)
       .map((zone) => ({
         ...zone,
-        latitude: Number(zone.latitude ?? zone.lat),
-        longitude: Number(zone.longitude ?? zone.lng),
+        latitude:
+          zone.latitude == null && zone.lat == null
+            ? null
+            : Number(zone.latitude ?? zone.lat),
+        longitude:
+          zone.longitude == null && zone.lng == null
+            ? null
+            : Number(zone.longitude ?? zone.lng),
         radiusKm: Number(zone.radiusKm) || 10,
       }));
     const promos = docsToJson(promosSnap).filter((promo) => {
@@ -50,13 +150,21 @@ publicRouter.get(
       if (ends && ends < now) return false;
       return true;
     });
+    const allFooterLinks = docsToJson(footerLinksSnap);
+    const footerLinks = allFooterLinks.filter((link) => link.active !== false);
+    const hiddenFooterHrefs = allFooterLinks
+      .filter((link) => link.active === false)
+      .map((link) => link.href)
+      .filter(Boolean);
 
-    res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    res.set("Cache-Control", "public, max-age=15, stale-while-revalidate=60");
     res.json({
       services,
       cities,
       zones,
       promos,
+      footerLinks,
+      hiddenFooterHrefs,
       settings,
       version: 2,
       fetchedAt: new Date().toISOString(),
@@ -71,11 +179,11 @@ publicRouter.get(
     const lng = Number(req.query.lng);
     const cityName = req.query.city ? String(req.query.city) : "";
     const state = req.query.state ? String(req.query.state) : "";
-    const zones = await activeServiceZones();
+    const zones = await allServiceZones();
 
     if (zones.length) {
       const result = evaluateServiceZones(zones, { lat, lng, cityName, state });
-      if (!Number.isFinite(lat) && !Number.isFinite(lng) && !cityName) {
+      if ((!Number.isFinite(lat) || !Number.isFinite(lng)) && !cityName) {
         return res.status(400).json({
           allowed: false,
           configured: true,
@@ -93,6 +201,7 @@ publicRouter.get(
               id: result.zone.id,
               cityName: result.zone.cityName,
               state: result.zone.state,
+              areaName: result.zone.areaName || "",
               radiusKm: result.zone.radiusKm,
               latitude: result.zone.latitude,
               longitude: result.zone.longitude,
@@ -130,6 +239,113 @@ publicRouter.get(
   }),
 );
 
+publicRouter.get(
+  "/ip-location",
+  asyncHandler(async (req, res) => {
+    res.set("Cache-Control", "private, no-store");
+    const ip = publicClientIp(req.ip);
+    if (!ip) return res.json({ available: false });
+
+    let response;
+    try {
+      response = await fetch(
+        `https://ipapi.co/${encodeURIComponent(ip)}/json/`,
+        { signal: AbortSignal.timeout(5000) },
+      );
+    } catch (error) {
+      const timedOut = error.name === "TimeoutError" || error.name === "AbortError";
+      throw new ApiError(
+        timedOut ? 504 : 502,
+        "Automatic city lookup is temporarily unavailable.",
+        timedOut ? "IP_LOCATION_TIMEOUT" : "IP_LOCATION_FAILED",
+      );
+    }
+    if (!response.ok) {
+      throw new ApiError(
+        502,
+        "Automatic city lookup is temporarily unavailable.",
+        "IP_LOCATION_FAILED",
+      );
+    }
+
+    const result = await response.json();
+    if (result.error || String(result.country_code || "").toUpperCase() !== "IN") {
+      return res.json({ available: false });
+    }
+
+    const city = String(result.city || "").trim();
+    const state = String(result.region || "").trim();
+    return res.json({ available: Boolean(city), city, state, accuracy: "city" });
+  }),
+);
+
+publicRouter.get(
+  "/reverse-geocode",
+  asyncHandler(async (req, res) => {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    if (
+      !Number.isFinite(lat) ||
+      lat < -90 ||
+      lat > 90 ||
+      !Number.isFinite(lng) ||
+      lng < -180 ||
+      lng > 180
+    ) {
+      return res.status(400).json({
+        error: "Provide valid latitude and longitude.",
+        code: "INVALID_COORDINATES",
+      });
+    }
+
+    const cacheKey = `${lat.toFixed(3)},${lng.toFixed(3)}`;
+    const cached = reverseGeocodeCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return res.json({ address: cached.address, source: "cache" });
+    }
+
+    const url = new URL("https://nominatim.openstreetmap.org/reverse");
+    url.searchParams.set("format", "jsonv2");
+    url.searchParams.set("zoom", "18");
+    url.searchParams.set("addressdetails", "1");
+    url.searchParams.set("lat", String(lat));
+    url.searchParams.set("lon", String(lng));
+    const result = await fetchReverseGeocode(url);
+    const components = result.address || {};
+    const address = {
+      state: components.state || components.region || "",
+      district:
+        components.city_district ||
+        components.district ||
+        components.state_district ||
+        components.county ||
+        components.city ||
+        components.town ||
+        components.village ||
+        "",
+      city: components.city || components.town || components.village || "",
+      locality:
+        components.locality ||
+        components.neighbourhood ||
+        components.suburb ||
+        components.quarter ||
+        components.hamlet ||
+        components.residential ||
+        "",
+    };
+    reverseGeocodeCache.set(cacheKey, {
+      address,
+      expiresAt: Date.now() + 6 * 60 * 60 * 1000,
+    });
+    if (reverseGeocodeCache.size > 500) {
+      const oldestKey = reverseGeocodeCache.keys().next().value;
+      if (oldestKey) reverseGeocodeCache.delete(oldestKey);
+    }
+    res.set("Cache-Control", "private, max-age=3600");
+    res.json({ address, source: "openstreetmap" });
+  }),
+);
+
 publicRouter.post(
   "/waitlist",
   asyncHandler(async (req, res) => {
@@ -155,8 +371,8 @@ publicRouter.post(
       email: body.email || "",
       cityName: body.cityName || "",
       state: body.state || "",
-      lat: Number.isFinite(Number(body.lat)) ? Number(body.lat) : null,
-      lng: Number.isFinite(Number(body.lng)) ? Number(body.lng) : null,
+      lat: coordinate(body.lat),
+      lng: coordinate(body.lng),
       message: body.message || "",
       status: "waiting",
       source: "geofence",
@@ -165,6 +381,86 @@ publicRouter.post(
     });
 
     res.status(201).json({ ok: true, id: ref.id });
+  }),
+);
+
+publicRouter.get(
+  "/workers/nearby",
+  asyncHandler(async (req, res) => {
+    const cityName = String(req.query.city || "").trim();
+    const state = String(req.query.state || "").trim();
+    const areaName = String(req.query.areaName || "").trim();
+    const lat = coordinate(req.query.lat);
+    const lng = coordinate(req.query.lng);
+    if (
+      !cityName ||
+      !state ||
+      lat === null ||
+      lng === null ||
+      lat < -90 ||
+      lat > 90 ||
+      lng < -180 ||
+      lng > 180
+    ) {
+      throw new ApiError(
+        422,
+        "A city, state and precise location are required to find nearby professionals.",
+        "LOCATION_REQUIRED",
+      );
+    }
+
+    const zoneCheck = await validateBookingZone({
+      lat,
+      lng,
+      cityName,
+      state,
+      areaName,
+    });
+    if (!zoneCheck.allowed) {
+      res.set("Cache-Control", "private, no-store");
+      return res.json({ workers: [], zoneAllowed: false });
+    }
+
+    const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50);
+    const snap = await collections.workers
+      .where("city", "==", cityName)
+      .where("status", "==", "approved")
+      .where("online", "==", true)
+      .limit(1000)
+      .get();
+    const eligible = prioritizeWorkers(
+      docsToJson(snap).filter(
+        (worker) =>
+          workerMatchesLocation(
+            worker,
+            {
+              cityName,
+              state,
+              areaName: zoneCheck.zone?.areaName || areaName,
+              lat,
+              lng,
+            },
+            zoneCheck.zone,
+          ),
+      ),
+      premiumActive,
+    ).slice(0, limit);
+    const publicSnapshots = await Promise.all(
+      eligible.map((worker) => collections.workersPublic.doc(worker.id).get()),
+    );
+    const workers = publicSnapshots.flatMap((snapshot, index) =>
+      snapshot.exists
+        ? [
+            {
+              ...docToJson(snapshot),
+              distanceKm: workerDistanceKm(eligible[index], { lat, lng }),
+            },
+          ]
+        : [],
+    );
+
+    res.set("Cache-Control", "private, no-store");
+    res.json({ workers, zoneAllowed: true, zoneId: zoneCheck.zone?.id || null });
   }),
 );
 

@@ -18,10 +18,18 @@ import {
   commissionFor,
   premiumActive,
 } from "../lib/booking.js";
-import { distanceMeters, hasCoords } from "../lib/geo.js";
-import { uploadImage } from "../lib/media.js";
+import {
+  deleteStoredImage,
+  uploadCloudinaryImage,
+} from "../lib/media.js";
+import { workerMatchesBooking } from "../lib/matching.js";
+import { jobFeedDocId, updateJobFeedStatus } from "../lib/jobFeed.js";
 import { notify, notifyAdmins, sendMail, emailLayout } from "../lib/notify.js";
-import { commissionTelegramMessage, sendTelegramAlert } from "../lib/telegram.js";
+import {
+  commissionTelegramMessage,
+  sendTelegramAlert,
+  sendTelegramDocument,
+} from "../lib/telegram.js";
 import {
   PHASE_META,
   TRACKING_PHASES,
@@ -32,6 +40,28 @@ import {
 import { docToJson, lastMonths, monthKey, toDate } from "../lib/utils.js";
 
 export const workerRouter = Router();
+
+async function removeCompletedBookingImage(booking, bookingRef) {
+  if (!booking.imagePath && !booking.imageCloudinaryId) return;
+  try {
+    await deleteStoredImage({
+      path: booking.imagePath,
+      cloudinaryId: booking.imageCloudinaryId,
+    });
+  } catch (error) {
+    console.warn(
+      "Completed booking image cleanup failed:",
+      bookingRef.id,
+      error.code || error.message,
+    );
+  }
+}
+
+function coordinate(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
 
 async function loadWorker(uid) {
   const snap = await collections.workers.doc(uid).get();
@@ -58,7 +88,17 @@ workerRouter.patch(
     const { snap, worker } = await loadWorker(req.user.uid);
 
     const updates = { updatedAt: FieldValue.serverTimestamp() };
-    for (const key of ["name", "service", "serviceKey", "area", "bio", "upiId"]) {
+    for (const key of [
+      "name",
+      "service",
+      "serviceKey",
+      "area",
+      "city",
+      "state",
+      "areaName",
+      "bio",
+      "upiId",
+    ]) {
       if (body[key] !== undefined) updates[key] = body[key];
     }
     if (body.phone !== undefined) updates.phone = body.phone;
@@ -80,7 +120,17 @@ workerRouter.patch(
       const publicUpdates = {
         updatedAt: FieldValue.serverTimestamp(),
       };
-      for (const key of ["name", "service", "serviceKey", "area", "photoPath", "online"]) {
+      for (const key of [
+        "name",
+        "service",
+        "serviceKey",
+        "area",
+        "city",
+        "state",
+        "areaName",
+        "photoPath",
+        "online",
+      ]) {
         if (updates[key] !== undefined) publicUpdates[key] = updates[key];
       }
       if (updates.pricePerWork !== undefined) publicUpdates.pricePerWork = updates.pricePerWork;
@@ -121,16 +171,39 @@ workerRouter.post(
     const uid = req.user.uid;
     const bookingRef = collections.bookings.doc(req.params.id);
     const workerRef = collections.workers.doc(uid);
+    const feedRef = collections.jobFeed.doc(jobFeedDocId(req.params.id, uid));
 
     const result = await db.runTransaction(async (tx) => {
       const bookingSnap = await tx.get(bookingRef);
       const workerSnap = await tx.get(workerRef);
+      const feedSnap = await tx.get(feedRef);
 
       if (!bookingSnap.exists) throw new ApiError(404, "Job not found.", "BOOKING_NOT_FOUND");
       if (!workerSnap.exists) throw new ApiError(404, "Worker profile not found.", "WORKER_NOT_FOUND");
+      if (
+        !feedSnap.exists ||
+        feedSnap.data().workerId !== uid ||
+        feedSnap.data().status !== "open"
+      ) {
+        throw new ApiError(
+          403,
+          "This job was not dispatched to your service area.",
+          "JOB_NOT_DISPATCHED",
+        );
+      }
 
       const booking = bookingSnap.data();
       const worker = workerSnap.data();
+      const zoneSnap = booking.serviceZoneId
+        ? await tx.get(collections.serviceZones.doc(booking.serviceZoneId))
+        : null;
+      const zone = zoneSnap?.exists
+        ? {
+            id: zoneSnap.id,
+            ...zoneSnap.data(),
+            isActive: zoneSnap.data().isActive !== false,
+          }
+        : null;
       const premium = premiumActive(worker);
       const gate = canAcceptJobs(worker, { premium });
 
@@ -159,29 +232,20 @@ workerRouter.post(
         throw new ApiError(403, "This job was reserved for another worker.", "JOB_RESERVED");
       }
 
-      if (hasCoords(worker) && hasCoords(booking.location)) {
-        const distance = distanceMeters(worker, booking.location);
-        const radiusKm = Number(worker.radiusKm) || 25;
-        if (distance !== null && distance > radiusKm * 1000) {
-          throw new ApiError(
-            403,
-            `This job is ${Math.round(distance / 1000)} km away — outside your ${radiusKm} km service radius.`,
-            "OUT_OF_RADIUS",
-          );
-        }
+      if (
+        (booking.serviceZoneId && !zone) ||
+        !workerMatchesBooking({ ...worker, id: uid }, booking, zone)
+      ) {
+        throw new ApiError(
+          403,
+          "This job is outside your registered service area or its active radius.",
+          "OUT_OF_SERVICE_AREA",
+        );
       }
 
       const now = FieldValue.serverTimestamp();
-      const workerLat = Number.isFinite(Number(worker.currentLat))
-        ? Number(worker.currentLat)
-        : Number.isFinite(Number(worker.lat))
-          ? Number(worker.lat)
-          : null;
-      const workerLng = Number.isFinite(Number(worker.currentLng))
-        ? Number(worker.currentLng)
-        : Number.isFinite(Number(worker.lng))
-          ? Number(worker.lng)
-          : null;
+      const workerLat = coordinate(worker.currentLat) ?? coordinate(worker.lat);
+      const workerLng = coordinate(worker.currentLng) ?? coordinate(worker.lng);
 
       tx.update(bookingRef, {
         workerId: uid,
@@ -211,7 +275,7 @@ workerRouter.post(
         ),
       });
       tx.set(
-        collections.jobFeed.doc(bookingRef.id),
+        feedRef,
         { status: "taken", workerId: uid, updatedAt: now },
         { merge: true },
       );
@@ -223,6 +287,12 @@ workerRouter.post(
         service: booking.service,
       };
     });
+
+    try {
+      await updateJobFeedStatus(bookingRef.id, "taken");
+    } catch (error) {
+      console.error("Could not close other worker job-feed entries:", error.code || error.message);
+    }
 
     await notify(result.customerId, {
       title: "Worker found!",
@@ -462,9 +532,17 @@ workerRouter.patch(
         updates.completedAt = now;
         updates.currentLat = null;
         updates.currentLng = null;
+        updates.imagePath = FieldValue.delete();
+        updates.imageCloudinaryId = FieldValue.delete();
         tx.set(
           workerRef,
-          { jobsCompleted: FieldValue.increment(1), updatedAt: now },
+          {
+            currentLat: FieldValue.delete(),
+            currentLng: FieldValue.delete(),
+            lastLocationAt: FieldValue.delete(),
+            jobsCompleted: FieldValue.increment(1),
+            updatedAt: now,
+          },
           { merge: true },
         );
         tx.set(
@@ -477,6 +555,10 @@ workerRouter.patch(
       tx.update(bookingRef, updates);
       return { booking, phase };
     });
+
+    if (result.phase === TRACKING_PHASES.COMPLETED) {
+      await removeCompletedBookingImage(result.booking, bookingRef);
+    }
 
     if (!result.unchanged) {
       const notificationByPhase = {
@@ -553,8 +635,6 @@ workerRouter.patch(
       tx.set(
         workerRef,
         {
-          lat: body.lat,
-          lng: body.lng,
           currentLat: body.lat,
           currentLng: body.lng,
           lastSeenAt: now,
@@ -598,6 +678,8 @@ workerRouter.patch(
         activeJob: false,
         currentLat: null,
         currentLng: null,
+        imagePath: FieldValue.delete(),
+        imageCloudinaryId: FieldValue.delete(),
         trackingAlert: false,
         completedAt: now,
         lastUpdatedTimestamp: now,
@@ -624,6 +706,8 @@ workerRouter.patch(
       );
       return { booking };
     });
+
+    await removeCompletedBookingImage(result.booking, bookingRef);
 
     await notify(result.booking.customerId, {
       title: "Job completed",
@@ -805,14 +889,16 @@ workerRouter.post(
     if (!workerSnap.exists) {
       throw new ApiError(404, "Worker profile not found. Apply as a worker first.", "WORKER_NOT_FOUND");
     }
-    const objectPath = await uploadImage(req.file.buffer, {
-      folder: "kyc",
+    const cloudinaryUpload = await uploadCloudinaryImage(req.file.buffer, {
+      folder: "worker-kyc",
       isPublic: false,
     });
 
     await collections.workers.doc(req.user.uid).set(
       {
-        kycPath: objectPath,
+        kycPath: FieldValue.delete(),
+        kycCloudinaryId: cloudinaryUpload.publicId,
+        kycCloudinaryFormat: cloudinaryUpload.format,
         kycStatus: "pending",
         kycSubmittedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
@@ -827,7 +913,26 @@ workerRouter.post(
       link: "/admin/approvals",
     });
 
-    res.json({ ok: true, status: "pending" });
+    const extension =
+      req.file.mimetype === "image/png"
+        ? "png"
+        : req.file.mimetype === "image/webp"
+          ? "webp"
+          : req.file.mimetype === "image/gif"
+            ? "gif"
+            : "jpg";
+    const delivery = await sendTelegramDocument(req.file.buffer, {
+      filename: `worker-id-${req.user.uid}.${extension}`,
+      mimeType: req.file.mimetype,
+      caption: `Worker ID verification\nName: ${req.user.name || workerSnap.data().name || "Worker"}\nWorker UID: ${req.user.uid}`,
+    });
+    res.json({
+      ok: true,
+      status: "pending",
+      cloudinaryStored: true,
+      telegramForwarded: delivery.ok,
+      telegramConfigured: !delivery.skipped,
+    });
   }),
 );
 

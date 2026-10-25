@@ -44,6 +44,39 @@ export async function sendTelegramAlert(message, { chatId = env.adminTelegramCha
   }
 }
 
+export async function sendTelegramDocument(
+  buffer,
+  { filename, mimeType = "application/octet-stream", caption = "", chatId = env.adminTelegramChatId } = {},
+) {
+  if (!env.telegramBotToken || !chatId) {
+    return { ok: false, skipped: true, reason: "not_configured" };
+  }
+
+  try {
+    const form = new FormData();
+    form.append("chat_id", chatId);
+    form.append("document", new Blob([buffer], { type: mimeType }), filename || "worker-id");
+    if (caption) form.append("caption", caption.slice(0, 1024));
+    const response = await fetch(
+      `https://api.telegram.org/bot${env.telegramBotToken}/sendDocument`,
+      { method: "POST", body: form, signal: AbortSignal.timeout(15000) },
+    );
+    const result = await response.json().catch(() => null);
+    if (!response.ok || result?.ok !== true) {
+      console.warn(
+        "Telegram document delivery failed:",
+        response.status,
+        sanitizeTelegramError(result?.description || "Invalid response"),
+      );
+      return { ok: false, skipped: false, status: response.status };
+    }
+    return { ok: true, skipped: false };
+  } catch (error) {
+    console.warn("Telegram document delivery error:", error.message);
+    return { ok: false, skipped: false, error: error.message };
+  }
+}
+
 function sanitizeTelegramError(value) {
   // Telegram error bodies are small JSON payloads. Strip the token if a proxy
   // or gateway echoes the request URL back in the error detail.
@@ -105,10 +138,10 @@ export function subscriptionPaidTelegramMessage({
     "? NEW RAZORPAY SUBSCRIPTION",
     `?? User: ${name || "Unknown"}${email ? ` (${email})` : ""}`,
     `????? Role: ${role === "worker" ? "Worker" : "Customer"}`,
-    `??? Plan: ${planLabel || "Membership"} · ${months || 1} month${Number(months) > 1 ? "s" : ""}`,
+    `??? Plan: ${planLabel || "Membership"} ï¿½ ${months || 1} month${Number(months) > 1 ? "s" : ""}`,
     `?? Amount: ?${Number(amount) || 0}`,
-    `?? Payment ID: ${paymentId || "—"}`,
-    `?? Order ID: ${orderId || "—"}`,
+    `?? Payment ID: ${paymentId || "ï¿½"}`,
+    `?? Order ID: ${orderId || "ï¿½"}`,
     "? Status: Auto-verified ?",
   ].join("\n");
 }
@@ -126,10 +159,10 @@ export function commissionPaidTelegramMessage({
     "? WORKER COMMISSION CLEARED",
     `?? Worker: ${workerName || workerId || "Unknown"}`,
     `?? Amount: ?${Number(amount) || 0}`,
-    `?? Payment ID: ${paymentId || "—"}`,
-    `?? Order ID: ${orderId || "—"}`,
+    `?? Payment ID: ${paymentId || "ï¿½"}`,
+    `?? Order ID: ${orderId || "ï¿½"}`,
     `??? Job: ${service || "Service job"}`,
-    `?? Booking: ${bookingId || "—"}`,
+    `?? Booking: ${bookingId || "ï¿½"}`,
     "? Status: Auto-verified ?",
   ].join("\n");
 }

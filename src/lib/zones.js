@@ -3,9 +3,10 @@ import { collections } from "../config/firebase.js";
 import { docsToJson } from "./utils.js";
 
 export const OUT_OF_ZONE_MESSAGE =
-  "We are not live in your location yet! Our services will get to your location soon.";
+  "We are expanding soon. We will be in your area soon.";
 
 function coord(value) {
+  if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -25,6 +26,7 @@ export function normalizeZone(zone) {
   if (!zone) return null;
   return {
     ...zone,
+    areaName: String(zone.areaName || zone.area || "").trim(),
     latitude: coord(zone.latitude ?? zone.lat),
     longitude: coord(zone.longitude ?? zone.lng),
     radiusKm: zoneRadiusKm(zone),
@@ -58,23 +60,54 @@ export function nearestZone(zones, point) {
   return ranked[0] || null;
 }
 
+function candidateZones(
+  zones,
+  { cityName, state, areaName, allowAnyArea = false } = {},
+) {
+  if (!cityName) return zones;
+  const city = String(cityName).trim().toLowerCase();
+  const region = String(state || "").trim().toLowerCase();
+  const area = String(areaName || "").trim().toLowerCase();
+  const matchingCity = zones.filter((zone) => {
+    if (String(zone.cityName || "").trim().toLowerCase() !== city) return false;
+    return (
+      !region ||
+      !zone.state ||
+      String(zone.state).trim().toLowerCase() === region
+    );
+  });
+  if (!matchingCity.length) return [];
+
+  const cityWide = matchingCity.filter((zone) => !zone.areaName);
+  const local = matchingCity.filter((zone) => zone.areaName);
+  if (!area) return cityWide.length ? cityWide : allowAnyArea ? local : [];
+  const matchingArea = local.filter(
+    (zone) => String(zone.areaName).trim().toLowerCase() === area,
+  );
+  if (matchingArea.length) return matchingArea;
+  return cityWide.length ? cityWide : allowAnyArea ? local : [];
+}
+
 /**
  * Checks a coordinate or city name against the admin-managed service zones.
  * Active zones are authoritative. If no zones exist yet, existing city-based
  * coverage remains available as a safe fallback.
  */
-export function evaluateServiceZones(zones, { lat, lng, cityName, state } = {}) {
+export function evaluateServiceZones(
+  zones,
+  { lat, lng, cityName, state, areaName } = {},
+) {
   const active = (zones || [])
     .map(normalizeZone)
     .filter((zone) => zone && zone.isActive !== false);
 
   if (!active.length) {
     return {
-      allowed: true,
-      configured: false,
+      allowed: !(zones || []).length,
+      configured: Boolean((zones || []).length),
       zone: null,
       nearest: null,
-      message: "",
+      message: (zones || []).length ? OUT_OF_ZONE_MESSAGE : "",
     };
   }
 
@@ -84,13 +117,22 @@ export function evaluateServiceZones(zones, { lat, lng, cityName, state } = {}) 
 
   if (hasPoint) {
     const point = { lat: latitude, lng: longitude };
-    const inside = active
+    const city = String(cityName || "").trim().toLowerCase();
+    const region = String(state || "").trim().toLowerCase();
+    const candidates = active.filter(
+      (zone) =>
+        (!city || String(zone.cityName || "").trim().toLowerCase() === city) &&
+        (!region ||
+          !zone.state ||
+          String(zone.state).trim().toLowerCase() === region),
+    );
+    const inside = candidates
       .filter((zone) => isInsideZone(zone, point))
       .sort(
         (a, b) =>
           (distanceToZoneMeters(a, point) || 0) - (distanceToZoneMeters(b, point) || 0),
       );
-    const nearest = nearestZone(active, point);
+    const nearest = nearestZone(candidates.length ? candidates : active, point);
 
     if (inside.length) {
       const zone = inside[0];
@@ -115,27 +157,16 @@ export function evaluateServiceZones(zones, { lat, lng, cityName, state } = {}) 
     };
   }
 
-  const wantedCity = String(cityName || "").trim().toLowerCase();
-  const wantedState = String(state || "").trim().toLowerCase();
-  if (wantedCity) {
-    const match = active.find((zone) => {
-      const zoneCity = String(zone.cityName || "").trim().toLowerCase();
-      const zoneState = String(zone.state || "").trim().toLowerCase();
-      if (zoneCity !== wantedCity) return false;
-      if (wantedState && zoneState && zoneState !== wantedState) return false;
-      return true;
-    });
-
-    if (match) {
-      return {
-        allowed: true,
-        configured: true,
-        zone: match,
-        nearest: null,
-        distanceMeters: 0,
-        message: `We serve ${match.cityName || "your area"}.`,
-      };
-    }
+  const match = candidateZones(active, { cityName, state, areaName })[0];
+  if (match) {
+    return {
+      allowed: true,
+      configured: true,
+      zone: match,
+      nearest: null,
+      distanceMeters: 0,
+      message: `We serve ${match.cityName || "your area"}.`,
+    };
   }
 
   return {
@@ -163,7 +194,9 @@ export async function allServiceZones() {
       String(a.cityName || "").localeCompare(String(b.cityName || "")));
 }
 
-export async function validateBookingZone({ lat, lng, cityName, state } = {}) {
-  const zones = await activeServiceZones();
-  return evaluateServiceZones(zones, { lat, lng, cityName, state });
+export async function validateBookingZone(
+  { lat, lng, cityName, state, areaName } = {},
+) {
+  const zones = await allServiceZones();
+  return evaluateServiceZones(zones, { lat, lng, cityName, state, areaName });
 }

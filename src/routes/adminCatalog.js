@@ -4,10 +4,11 @@ import { collections } from "../config/firebase.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { upload } from "../middleware/upload.js";
-import { uploadImage } from "../lib/media.js";
+import { uploadCloudinaryImage } from "../lib/media.js";
 import { notify } from "../lib/notify.js";
 import {
   citySchema,
+  footerLinkSchema,
   promoSchema,
   serviceSchema,
   settingsSchema,
@@ -158,7 +159,9 @@ adminCatalogRouter.post(
     const body = promoSchema.parse(req.body || {});
     let imagePath = body.imagePath || "";
     if (req.file) {
-      imagePath = await uploadImage(req.file.buffer, { folder: "promos" });
+      imagePath = (
+        await uploadCloudinaryImage(req.file.buffer, { folder: "promos" })
+      ).url;
     }
     const ref = collections.promos.doc();
     await ref.set({
@@ -179,7 +182,9 @@ adminCatalogRouter.patch(
   asyncHandler(async (req, res) => {
     const updates = pickProvided(promoSchema, req.body);
     if (req.file) {
-      updates.imagePath = await uploadImage(req.file.buffer, { folder: "promos" });
+      updates.imagePath = (
+        await uploadCloudinaryImage(req.file.buffer, { folder: "promos" })
+      ).url;
     }
     if (updates.startsAt !== undefined) updates.startsAt = parseDate(updates.startsAt);
     if (updates.endsAt !== undefined) updates.endsAt = parseDate(updates.endsAt);
@@ -202,6 +207,64 @@ adminCatalogRouter.delete(
   }),
 );
 
+/* ----------------------------- FOOTER LINKS ------------------------------ */
+
+adminCatalogRouter.get(
+  "/footer-links",
+  asyncHandler(async (_req, res) => {
+    const snap = await collections.footerLinks.get();
+    const links = docsToJson(snap).sort(
+      (a, b) => (Number(a.order) || 0) - (Number(b.order) || 0),
+    );
+    res.json({ links });
+  }),
+);
+
+adminCatalogRouter.post(
+  "/footer-links",
+  asyncHandler(async (req, res) => {
+    const body = footerLinkSchema.parse(req.body || {});
+    const ref = collections.footerLinks.doc();
+    await ref.set({
+      ...body,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    res.status(201).json({ link: docToJson(await ref.get()) });
+  }),
+);
+
+adminCatalogRouter.patch(
+  "/footer-links/:id",
+  asyncHandler(async (req, res) => {
+    const updates = pickProvided(footerLinkSchema, req.body);
+    if (!Object.keys(updates).length) {
+      throw new ApiError(422, "Nothing to update.", "NO_CHANGES");
+    }
+    const ref = collections.footerLinks.doc(req.params.id);
+    if (!(await ref.get()).exists) {
+      throw new ApiError(404, "Footer link not found.", "FOOTER_LINK_NOT_FOUND");
+    }
+    await ref.set({ ...updates, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    res.json({ link: docToJson(await ref.get()) });
+  }),
+);
+
+adminCatalogRouter.delete(
+  "/footer-links/:id",
+  asyncHandler(async (req, res) => {
+    const ref = collections.footerLinks.doc(req.params.id);
+    if (!(await ref.get()).exists) {
+      throw new ApiError(404, "Footer link not found.", "FOOTER_LINK_NOT_FOUND");
+    }
+    await ref.set(
+      { active: false, updatedAt: FieldValue.serverTimestamp() },
+      { merge: true },
+    );
+    res.json({ ok: true });
+  }),
+);
+
 /* ------------------------------- SETTINGS ------------------------------- */
 
 adminCatalogRouter.get(
@@ -219,7 +282,9 @@ adminCatalogRouter.patch(
     const body = settingsSchema.parse(req.body || {});
     const updates = { ...body, updatedAt: FieldValue.serverTimestamp() };
     if (req.file) {
-      updates.qrImagePath = await uploadImage(req.file.buffer, { folder: "settings" });
+      updates.qrImagePath = (
+        await uploadCloudinaryImage(req.file.buffer, { folder: "settings" })
+      ).url;
     }
     await collections.settings.doc("app").set(updates, { merge: true });
     invalidateSettings();

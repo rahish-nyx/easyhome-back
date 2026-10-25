@@ -3,7 +3,8 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { auth, collections, db } from "../config/firebase.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { requireAdmin } from "../middleware/auth.js";
-import { streamPrivateObject } from "../lib/media.js";
+import { privateCloudinaryDownloadUrl } from "../lib/media.js";
+import { updateJobFeedStatus } from "../lib/jobFeed.js";
 import { emailLayout, notify, sendMail } from "../lib/notify.js";
 import { approveWorker, syncPublicWorker } from "../lib/workers.js";
 import {
@@ -339,9 +340,14 @@ adminRouter.get(
   asyncHandler(async (req, res) => {
     const snap = await collections.workers.doc(req.params.id).get();
     if (!snap.exists) throw new ApiError(404, "Worker not found.", "NOT_FOUND");
-    const { kycPath } = snap.data();
-    if (!kycPath) throw new ApiError(404, "No KYC document uploaded.", "KYC_MISSING");
-    await streamPrivateObject(kycPath, res);
+    const { kycCloudinaryId, kycCloudinaryFormat } = snap.data();
+    if (!kycCloudinaryId || !kycCloudinaryFormat) {
+      throw new ApiError(404, "No KYC document uploaded.", "KYC_MISSING");
+    }
+    res.redirect(
+      302,
+      privateCloudinaryDownloadUrl(kycCloudinaryId, kycCloudinaryFormat),
+    );
   }),
 );
 
@@ -382,10 +388,11 @@ adminRouter.patch(
       cancelledBy: "admin",
       updatedAt: FieldValue.serverTimestamp(),
     });
-    await collections.jobFeed.doc(ref.id).set(
-      { status: "cancelled", updatedAt: FieldValue.serverTimestamp() },
-      { merge: true },
-    );
+    try {
+      await updateJobFeedStatus(ref.id, "cancelled");
+    } catch (error) {
+      console.error("Could not close admin-cancelled job-feed entries:", error.code || error.message);
+    }
     await collections.urgentPublic.doc(ref.id).delete().catch(() => {});
 
     await notify(booking.customerId, {

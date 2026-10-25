@@ -23,6 +23,12 @@ import { docToJson, docsToJson } from "../lib/utils.js";
 export const adminZonesRouter = Router();
 adminZonesRouter.use(requireAdmin);
 
+function coordinate(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 async function audit(actorId, action, details = {}) {
   try {
     await collections.audit.add({
@@ -79,7 +85,9 @@ adminZonesRouter.post(
         String(zone.cityName || "").trim().toLowerCase() ===
           body.cityName.trim().toLowerCase() &&
         String(zone.state || "").trim().toLowerCase() ===
-          body.state.trim().toLowerCase(),
+          body.state.trim().toLowerCase() &&
+        String(zone.areaName || "").trim().toLowerCase() ===
+          String(body.areaName || "").trim().toLowerCase(),
     );
     if (duplicate) {
       throw new ApiError(
@@ -108,8 +116,29 @@ adminZonesRouter.patch(
       throw new ApiError(422, "Nothing to update.", "NO_CHANGES");
     }
     const ref = collections.serviceZones.doc(req.params.id);
-    if (!(await ref.get()).exists) {
+    const current = await ref.get();
+    if (!current.exists) {
       throw new ApiError(404, "Service zone not found.", "ZONE_NOT_FOUND");
+    }
+    const next = { ...current.data(), ...updates };
+    if (updates.cityName || updates.state || updates.areaName !== undefined) {
+      const duplicate = (await allServiceZones()).find(
+        (zone) =>
+          zone.id !== ref.id &&
+          String(zone.cityName || "").trim().toLowerCase() ===
+            String(next.cityName || "").trim().toLowerCase() &&
+          String(zone.state || "").trim().toLowerCase() ===
+            String(next.state || "").trim().toLowerCase() &&
+          String(zone.areaName || "").trim().toLowerCase() ===
+            String(next.areaName || "").trim().toLowerCase(),
+      );
+      if (duplicate) {
+        throw new ApiError(
+          409,
+          "A service zone already exists for this city, state and local area.",
+          "DUPLICATE_ZONE",
+        );
+      }
     }
     await ref.set(
       { ...updates, updatedAt: FieldValue.serverTimestamp() },
@@ -173,20 +202,14 @@ adminZonesRouter.get(
           workerOnline: worker?.online !== false,
           workerLastSeenAt: worker?.lastSeenAt || null,
           tracker: {
-            currentLat: Number.isFinite(Number(booking.currentLat))
-              ? Number(booking.currentLat)
-              : Number.isFinite(Number(worker?.currentLat))
-                ? Number(worker.currentLat)
-                : Number.isFinite(Number(worker?.lat))
-                  ? Number(worker.lat)
-                  : null,
-            currentLng: Number.isFinite(Number(booking.currentLng))
-              ? Number(booking.currentLng)
-              : Number.isFinite(Number(worker?.currentLng))
-                ? Number(worker.currentLng)
-                : Number.isFinite(Number(worker?.lng))
-                  ? Number(worker.lng)
-                  : null,
+            currentLat:
+              coordinate(booking.currentLat) ??
+              coordinate(worker?.currentLat) ??
+              coordinate(worker?.lat),
+            currentLng:
+              coordinate(booking.currentLng) ??
+              coordinate(worker?.currentLng) ??
+              coordinate(worker?.lng),
             customerLat: point?.latitude ?? null,
             customerLng: point?.longitude ?? null,
             distanceMeters: eta.distanceMeters,

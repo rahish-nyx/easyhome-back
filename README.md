@@ -8,7 +8,7 @@ Thin Express 5 service that owns every privileged EasyHome write. The web app re
 
 - Node.js 20+
 - Express 5
-- Firebase Admin SDK (Auth, Firestore, Storage)
+- Firebase Admin SDK (Auth, Firestore)
 - Zod validation, Helmet, CORS, rate limiting, compression, Multer
 - Resend for optional transactional email
 
@@ -31,14 +31,14 @@ Never commit `.env` or the service-account key. Both are gitignored.
 
 The current project is `easyhome-bec14` (Firestore region `asia-south1`).
 
-1. Link a billing account to the Google Cloud project. Identity Platform (Firebase Authentication) and a default Storage bucket cannot be initialised while billing is disabled.
+1. Enable Firebase Authentication and Cloud Firestore for the Google Cloud project.
 2. **Authentication** -> enable **Email/Password** and **Google**.
-3. **Storage** -> create the default bucket (`easyhome-bec14.firebasestorage.app`).
-4. Deploy the security rules and indexes:
+3. Configure Cloudinary credentials in `backend/.env` for image uploads.
+4. Deploy the Firestore rules and indexes:
 
 ```bash
 npx firebase-tools login
-npx firebase-tools deploy --only firestore:rules,firestore:indexes,storage
+npx firebase-tools deploy --only firestore:rules,firestore:indexes
 ```
 
 5. Build the frontend, then deploy hosting:
@@ -79,7 +79,8 @@ Health check: `GET /health` -> `{ ok: true, service: "easyhome-api", version: 2 
 | `CORS_ORIGINS` | Comma-separated allowed web origins |
 | `PUBLIC_WEB_URL` | Links used in emails and notifications |
 | `FIREBASE_*` / `GOOGLE_APPLICATION_CREDENTIALS` | Admin credentials |
-| `FIREBASE_STORAGE_BUCKET` | Media/KYC bucket |
+| `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Image uploads and private KYC documents |
+| `CLOUDINARY_URL` | Alternative Cloudinary credential format |
 | `RESEND_API_KEY`, `MAIL_FROM` | Optional transactional email |
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME` | First admin seed |
 | `DEFAULT_COMMISSION_PCT`, `DEFAULT_SUBSCRIPTION_PRICE` | Business defaults |
@@ -88,7 +89,7 @@ Health check: `GET /health` -> `{ ok: true, service: "easyhome-api", version: 2 
 | `RAZORPAY_WEBHOOK_SECRET` | HMAC secret for `/api/payment/webhook` |
 | `TELEGRAM_BOT_TOKEN`, `ADMIN_TELEGRAM_CHAT_ID` | Optional admin payment alerts |
 
-`FIRESTORE_EMULATOR_HOST`, `FIREBASE_AUTH_EMULATOR_HOST` and `FIREBASE_STORAGE_EMULATOR_HOST` switch the API to the emulator suite without a service account.
+`FIRESTORE_EMULATOR_HOST` and `FIREBASE_AUTH_EMULATOR_HOST` switch the API to the emulator suite without a service account.
 
 ## Security model
 
@@ -97,8 +98,9 @@ Health check: `GET /health` -> `{ ok: true, service: "easyhome-api", version: 2 
 - Privileged routes verify the Firebase ID token and custom claims (`role`, `workerApproved`, `admin`), with `admins/{uid}` as an additional admin check.
 - Phone numbers live in `bookings/{id}/private/contact`, never in public booking documents.
 - `workersPublic` contains only safe directory fields (no phone, email, UPI or KYC).
-- KYC files are served only through an admin-authenticated route.
-- Worker job acceptance, price negotiation, completion and commission settlement run in Firestore transactions.
+- KYC files are stored as private Cloudinary assets and exposed by a short-lived URL issued through an admin-authenticated route.
+- Job-feed entries and in-app job notifications are created only for approved, online workers matching the booking's service, exact city/state/locality and active-zone radius; Pro workers are notified first.
+- Worker job acceptance rechecks the active zone and worker radius in a Firestore transaction, in addition to price negotiation, completion and commission settlement.
 - A booking with `preferredWorkerId` is reserved for that worker in the API, not just hidden in the UI.
 - Rate limits apply globally, and more tightly to auth endpoints.
 
@@ -107,12 +109,12 @@ Health check: `GET /health` -> `{ ok: true, service: "easyhome-api", version: 2 
 | Collection | Purpose |
 | --- | --- |
 | `users/{uid}` | Customer/admin profile, role, premium state |
-| `workers/{uid}` | Private worker profile, trades, availability, earnings, KYC paths |
+| `workers/{uid}` | Private worker profile, trades, availability, earnings, Cloudinary KYC identifiers |
 | `workersPublic/{uid}` | Safe public worker directory |
 | `services/{id}`, `cities/{id}`, `promos/{id}` | Admin-managed catalogue |
 | `bookings/{id}` | Booking lifecycle, pricing, assignment, status |
 | `bookings/{id}/private/contact` | Phone and private contact details |
-| `jobFeed/{bookingId}` | Open-job feed used by workers |
+| `jobFeed/{feedId}` | Open-job feed entries scoped to individual eligible workers |
 | `urgentPublic/{bookingId}` | Sanitised urgent jobs for the storefront |
 | `subscriptions/{id}` | Razorpay membership orders and activated plans |
 | `commissions/{id}` | Worker commission dues and Razorpay settlements |
@@ -197,10 +199,9 @@ All routes are prefixed by `/api`.
 
 ## Media
 
-- Public images are uploaded to Storage and served through `GET /api/media/:path`.
-- KYC images use a separate private folder and are only exposed by the admin KYC route.
+- Public images and private KYC documents are stored in Cloudinary. Firebase is used only for Authentication and Firestore.
+- Uploads require Cloudinary credentials; there is no alternate bucket or local-file fallback.
 - Uploads are size/type limited by Multer and validated server-side.
-- If the Storage bucket is missing, uploads fail cleanly instead of silently writing to the repository.
 
 ## Email and payments
 
@@ -212,12 +213,12 @@ All routes are prefixed by `/api`.
 
 ## Deploy checklist
 
-1. Link billing and enable Authentication + Storage in the Firebase console.
+1. Enable Authentication and Firestore in the Firebase console, and configure Cloudinary credentials on the API.
 2. Set a strong `ADMIN_PASSWORD`, then run `npm run seed`.
 3. Deploy this Express API to a Node host (Render, Railway, Fly.io, Cloud Run) or wrap it as a Firebase Cloud Function with an `/api/**` Hosting rewrite. Firebase Hosting alone cannot run Express.
 4. Add the Hosting origin to `CORS_ORIGINS`, and set `VITE_API_URL` in the frontend build to the API base **including `/api`**.
 5. `npx firebase-tools login`.
-6. Deploy rules and indexes: `npx firebase-tools deploy --only firestore:rules,firestore:indexes,storage`.
+6. Deploy rules and indexes: `npx firebase-tools deploy --only firestore:rules,firestore:indexes`.
 7. Build the frontend, then deploy hosting.
 8. Smoke test `/health`, `/api/public/bootstrap`, sign-in, booking creation, worker approval and admin dashboard.
 
@@ -227,7 +228,7 @@ All routes are prefixed by `/api`.
 | --- | --- |
 | `CONFIGURATION_NOT_FOUND` on sign-in | Authentication is not enabled, or billing is not linked for Identity Platform. |
 | `BILLING_NOT_ENABLED` | Link a billing account to the Google Cloud project. |
-| Storage upload 403/404 | Create the default Storage bucket and verify the service account. |
+| Cloudinary upload failure | Verify the Cloudinary credentials and API network access. |
 | `firebaserules.releases.create` denied | The service account cannot deploy rules. Use `npx firebase-tools login` with an owner account, or grant Firebase Rules Admin. |
 | `query requires an index` | Deploy `firestore.indexes.json` with the Firebase CLI. |
 | Public catalogue is empty | Firestore rules are still deny-all; deploy them. |

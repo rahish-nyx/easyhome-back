@@ -2,6 +2,12 @@ import { auth, collections } from "../config/firebase.js";
 import { premiumActive } from "./booking.js";
 import { docToJson } from "./utils.js";
 
+function coordinate(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 /**
  * Keeps the public worker directory in sync with the private worker document.
  * Public docs intentionally contain no phone, email, UPI or KYC data.
@@ -27,8 +33,11 @@ export async function syncPublicWorker(uid) {
     serviceKey: worker.serviceKey || "",
     pricePerWork: Number(worker.pricePerWork) || 0,
     area: worker.area || "",
-    lat: Number.isFinite(Number(worker.lat)) ? Number(worker.lat) : null,
-    lng: Number.isFinite(Number(worker.lng)) ? Number(worker.lng) : null,
+    city: worker.city || "",
+    state: worker.state || "",
+    areaName: worker.areaName || "",
+    lat: coordinate(worker.lat),
+    lng: coordinate(worker.lng),
     online: worker.online === true,
     rating: Number(worker.rating) || 0,
     reviewCount: Number(worker.reviewCount) || 0,

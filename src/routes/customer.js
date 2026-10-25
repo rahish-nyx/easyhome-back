@@ -13,9 +13,19 @@ import {
   reviewSchema,
   subscriptionRequestSchema,
 } from "../lib/validate.js";
-import { appSettings, commissionFor, premiumActive } from "../lib/booking.js";
+import {
+  appSettings,
+  canAcceptJobs,
+  commissionFor,
+  premiumActive,
+} from "../lib/booking.js";
 import { nearestServiceArea } from "../lib/geo.js";
-import { uploadImage } from "../lib/media.js";
+import { uploadCloudinaryImage } from "../lib/media.js";
+import {
+  prioritizeWorkers,
+  workerMatchesBooking,
+} from "../lib/matching.js";
+import { jobFeedDocId, updateJobFeedStatus } from "../lib/jobFeed.js";
 import { notify, notifyAdmins } from "../lib/notify.js";
 import { sendTelegramAlert, subscriptionTelegramMessage } from "../lib/telegram.js";
 import { OUT_OF_ZONE_MESSAGE, validateBookingZone } from "../lib/zones.js";
@@ -81,7 +91,20 @@ customerRouter.post(
     }
 
     const hasCoords =
-      Number.isFinite(Number(body.lat)) && Number.isFinite(Number(body.lng));
+      body.lat !== null &&
+      body.lat !== undefined &&
+      body.lng !== null &&
+      body.lng !== undefined &&
+      Number.isFinite(Number(body.lat)) &&
+      Number.isFinite(Number(body.lng));
+
+    if (!hasCoords) {
+      throw new ApiError(
+        422,
+        "Precise coordinates are required to verify the service radius. Use current location or select a mapped service area.",
+        "BOOKING_LOCATION_REQUIRED",
+      );
+    }
 
     // Admin-managed service zones are authoritative. If no zones have been
     // configured yet, fall back to the original city-radius coverage model.
@@ -90,6 +113,7 @@ customerRouter.post(
       lng: hasCoords ? Number(body.lng) : null,
       cityName: body.city,
       state: body.state,
+      areaName: body.areaName,
     });
 
     if (!zoneCheck.allowed) {
@@ -118,9 +142,69 @@ customerRouter.post(
       }
     }
 
+    const bookingForMatching = {
+      serviceKey: service.key,
+      cityName: zoneCheck.zone?.cityName || body.city || "",
+      stateName: zoneCheck.zone?.state || body.state || "",
+      areaName: zoneCheck.zone?.areaName || body.areaName || "",
+      preferredWorkerId: body.preferredWorkerId || "",
+      location: {
+        lat: hasCoords ? Number(body.lat) : null,
+        lng: hasCoords ? Number(body.lng) : null,
+      },
+    };
+    const workersSnap = await collections.workers
+      .where("serviceKey", "==", service.key)
+      .where("status", "==", "approved")
+      .get();
+    const candidates = prioritizeWorkers(
+      workersSnap.docs
+        .map((doc) => ({ id: doc.id, ...doc.data() }))
+        .filter((worker) => {
+          const premium = premiumActive(worker);
+          return (
+            canAcceptJobs(worker, { premium }).allowed &&
+            workerMatchesBooking(worker, bookingForMatching, zoneCheck.zone)
+          );
+        }),
+      premiumActive,
+    );
+    if (!candidates.length) {
+      warnings.push(
+        "Your request is in the service area, but no online professional currently matches this location and trade.",
+      );
+    }
+
+    if (
+      body.preferredWorkerId &&
+      !candidates.some((worker) => worker.id === body.preferredWorkerId)
+    ) {
+      throw new ApiError(
+        422,
+        "The selected professional is not currently available in this service area.",
+        "PREFERRED_WORKER_UNAVAILABLE",
+      );
+    }
+
     let imagePath = "";
+    let imageCloudinaryId = "";
+    const warnings = [];
     if (req.file) {
-      imagePath = await uploadImage(req.file.buffer, { folder: "bookings" });
+      try {
+        const uploaded = await uploadCloudinaryImage(req.file.buffer, {
+          folder: "bookings",
+        });
+        imagePath = uploaded.url;
+        imageCloudinaryId = uploaded.publicId;
+      } catch (error) {
+        console.error(
+          "Optional booking image upload failed:",
+          error.code || error.message,
+        );
+        warnings.push(
+          "Your request was sent, but its photo could not be attached. You can share it with support.",
+        );
+      }
     }
 
     const customerSnap = await collections.users.doc(uid).get();
@@ -149,10 +233,14 @@ customerRouter.post(
         label: body.addressLabel || "",
         verified: hasCoords,
       },
-      cityName: body.city || zoneCheck.zone?.cityName || "",
-      stateName: body.state || zoneCheck.zone?.state || "",
+      cityName: zoneCheck.zone?.cityName || body.city || "",
+      stateName: zoneCheck.zone?.state || body.state || "",
+      areaName: zoneCheck.zone?.areaName || body.areaName || "",
       serviceZoneId: zoneCheck.zone?.id || null,
       serviceZoneName: zoneCheck.zone?.cityName || null,
+      serviceZoneLatitude: zoneCheck.zone?.latitude ?? null,
+      serviceZoneLongitude: zoneCheck.zone?.longitude ?? null,
+      serviceZoneRadiusKm: zoneCheck.zone?.radiusKm ?? null,
       budget: Math.round(body.budget),
       urgency: body.urgency,
       status: "pending",
@@ -180,6 +268,7 @@ customerRouter.post(
         },
       ],
       imagePath,
+      ...(imageCloudinaryId ? { imageCloudinaryId } : {}),
       preferredWorkerId: body.preferredWorkerId || "",
       pricing: {
         workerPrice: null,
@@ -207,66 +296,94 @@ customerRouter.post(
       phone: normalizePhone(body.phone),
       createdAt: now,
     });
-    batch.set(collections.jobFeed.doc(bookingId), {
-      bookingId,
-      service: service.name,
-      serviceKey: service.key,
-      description: body.description.slice(0, 180),
-      area: body.area,
-      lat: roundedLat,
-      lng: roundedLng,
-      budget: Math.round(body.budget),
-      urgency: body.urgency,
-      status: "open",
-      workerId: null,
-      preferredWorkerId: body.preferredWorkerId || "",
-      createdAt: now,
-    });
     if (body.urgency === "urgent") {
       batch.set(collections.urgentPublic.doc(bookingId), {
         service: service.name,
         serviceKey: service.key,
         area: body.area,
+        cityName: bookingForMatching.cityName,
+        stateName: bookingForMatching.stateName,
+        areaName: bookingForMatching.areaName,
+        serviceZoneId: zoneCheck.zone?.id || null,
+        lat: roundedLat,
+        lng: roundedLng,
         budget: Math.round(body.budget),
         createdAt: now,
       });
     }
     await batch.commit();
 
-    // Notify matching approved workers (preferred worker first).
-    const workersSnap = await collections.workers
-      .where("serviceKey", "==", service.key)
-      .limit(50)
-      .get();
+    try {
+      if (candidates.length) {
+        for (let index = 0; index < candidates.length; index += 450) {
+          const feedBatch = db.batch();
+          candidates.slice(index, index + 450).forEach((worker) => {
+            feedBatch.set(
+              collections.jobFeed.doc(jobFeedDocId(bookingId, worker.id)),
+              {
+                bookingId,
+                workerId: worker.id,
+                service: service.name,
+                serviceKey: service.key,
+                description: body.description.slice(0, 180),
+                area: body.area,
+                lat: roundedLat,
+                lng: roundedLng,
+                cityName: bookingForMatching.cityName,
+                stateName: bookingForMatching.stateName,
+                areaName: bookingForMatching.areaName,
+                serviceZoneId: zoneCheck.zone?.id || null,
+                serviceZoneLatitude: zoneCheck.zone?.latitude ?? null,
+                serviceZoneLongitude: zoneCheck.zone?.longitude ?? null,
+                serviceZoneRadiusKm: zoneCheck.zone?.radiusKm ?? null,
+                priority: premiumActive(worker) ? "pro" : "standard",
+                budget: Math.round(body.budget),
+                urgency: body.urgency,
+                status: "open",
+                preferredWorkerId: body.preferredWorkerId || "",
+                createdAt: now,
+              },
+            );
+          });
+          await feedBatch.commit();
+        }
 
-    const candidates = workersSnap.docs
-      .filter((doc) => doc.data().status === "approved")
-      .sort((a, b) => {
-        const aPreferred = a.id === body.preferredWorkerId ? -1 : 0;
-        const bPreferred = b.id === body.preferredWorkerId ? -1 : 0;
-        return aPreferred - bPreferred;
-      })
-      .slice(0, 30);
-
-    if (candidates.length) {
-      const notifBatch = db.batch();
-      candidates.forEach((worker) => {
-        const ref = collections.notifications.doc();
-        notifBatch.set(ref, {
-          userId: worker.id,
-          title: body.urgency === "urgent" ? "Urgent job near you" : "New job near you",
-          body: `${service.name} · ${body.area} · ₹${Math.round(body.budget)}`,
-          type: "new_job",
-          link: `/worker?job=${bookingId}`,
-          read: false,
-          createdAt: now,
-        });
-      });
-      await notifBatch.commit();
+        const priorityGroups = [
+          candidates.filter((worker) => premiumActive(worker)),
+          candidates.filter((worker) => !premiumActive(worker)),
+        ];
+        for (const group of priorityGroups) {
+          for (let index = 0; index < group.length; index += 450) {
+            const notifBatch = db.batch();
+            group.slice(index, index + 450).forEach((worker) => {
+              const ref = collections.notifications.doc();
+              notifBatch.set(ref, {
+                userId: worker.id,
+                title:
+                  body.urgency === "urgent"
+                    ? "Urgent job near you"
+                    : "New job near you",
+                body: `${service.name} · ${body.area} · ₹${Math.round(body.budget)}`,
+                type: "new_job",
+                priority: premiumActive(worker) ? "pro" : "standard",
+                link: `/worker?job=${bookingId}`,
+                read: false,
+                createdAt: now,
+              });
+            });
+            await notifBatch.commit();
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Booking worker notifications failed:", error.code || error.message);
+      warnings.push(
+        "Your request was saved, but we could not notify professionals right now. Contact support if you do not receive a response.",
+      );
     }
 
     const saved = await bookingRef.get();
-    res.status(201).json({ booking: docToJson(saved) });
+    res.status(201).json({ booking: docToJson(saved), warnings });
   }),
 );
 
@@ -425,14 +542,15 @@ customerRouter.patch(
           at: Timestamp.now(),
         }),
       });
-      tx.set(
-        collections.jobFeed.doc(ref.id),
-        { status: "cancelled", updatedAt: FieldValue.serverTimestamp() },
-        { merge: true },
-      );
       tx.delete(collections.urgentPublic.doc(ref.id));
       return { ...data, status: "cancelled" };
     });
+
+    try {
+      await updateJobFeedStatus(ref.id, "cancelled");
+    } catch (error) {
+      console.error("Could not close cancelled job-feed entries:", error.code || error.message);
+    }
 
     if (result.workerId) {
       await notify(result.workerId, {
@@ -797,6 +915,20 @@ customerRouter.patch(
     }
 
     res.json({ ok: true, updated: snap.size });
+  }),
+);
+
+customerRouter.delete(
+  "/notifications/:id",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const ref = collections.notifications.doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().userId !== req.user.uid) {
+      throw new ApiError(404, "Notification not found.", "NOTIFICATION_NOT_FOUND");
+    }
+    await ref.delete();
+    res.json({ ok: true });
   }),
 );
 

@@ -1,27 +1,30 @@
 import { getDistance } from "geolib";
 
+function coordinate(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 export function distanceMeters(a, b) {
-  if (
-    !Number.isFinite(Number(a?.lat)) ||
-    !Number.isFinite(Number(a?.lng)) ||
-    !Number.isFinite(Number(b?.lat)) ||
-    !Number.isFinite(Number(b?.lng))
-  ) {
+  const aLat = coordinate(a?.lat);
+  const aLng = coordinate(a?.lng);
+  const bLat = coordinate(b?.lat);
+  const bLng = coordinate(b?.lng);
+  if (aLat === null || aLng === null || bLat === null || bLng === null) {
     return null;
   }
 
   return Math.round(
     getDistance(
-      { latitude: Number(a.lat), longitude: Number(a.lng) },
-      { latitude: Number(b.lat), longitude: Number(b.lng) },
+      { latitude: aLat, longitude: aLng },
+      { latitude: bLat, longitude: bLng },
     ),
   );
 }
 
 export function hasCoords(value) {
-  return (
-    Number.isFinite(Number(value?.lat)) && Number.isFinite(Number(value?.lng))
-  );
+  return coordinate(value?.lat) !== null && coordinate(value?.lng) !== null;
 }
 
 /**

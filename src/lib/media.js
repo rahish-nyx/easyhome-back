@@ -1,5 +1,6 @@
-import { randomUUID } from "node:crypto";
-import { bucket } from "../config/firebase.js";
+import { createHash, randomUUID } from "node:crypto";
+import cloudinaryPackage from "cloudinary";
+import { env } from "../config/env.js";
 import { ApiError } from "../middleware/errors.js";
 
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -55,92 +56,160 @@ function inspectImage(buffer) {
   return match;
 }
 
-/**
- * Uploads an image to Firebase Storage.
- * Public assets live under `public/…` and are served through /api/media.
- * Private assets (KYC documents) live under `private/…` and are admin-only.
- */
-export async function uploadImage(buffer, { folder, isPublic = true }) {
-  const { ext, contentType } = inspectImage(buffer);
-  const safeFolder = String(folder || "misc").replace(/[^a-z0-9/_-]/gi, "");
-  const objectPath = `${isPublic ? "public" : "private"}/${safeFolder}/${Date.now()}-${randomUUID()}.${ext}`;
-  const file = bucket.file(objectPath);
-
-  await file.save(buffer, {
-    contentType,
-    resumable: false,
-    validation: "crc32c",
-    metadata: {
-      cacheControl: isPublic
-        ? "public, max-age=31536000, immutable"
-        : "private, no-store",
-      metadata: { uploadedBy: "easyhome-api" },
-    },
-  });
-
-  return objectPath;
-}
-
-export async function streamObject(objectPath, res, { cache = true } = {}) {
-  const cleanPath = String(objectPath || "").replace(/^\/+/, "");
-
-  if (!cleanPath || cleanPath.includes("..")) {
-    throw new ApiError(400, "Invalid media path.", "INVALID_MEDIA_PATH");
-  }
-  if (cleanPath.startsWith("private/")) {
-    throw new ApiError(403, "This media is private.", "MEDIA_FORBIDDEN");
-  }
-
-  const file = bucket.file(cleanPath);
-  const [exists] = await file.exists();
-  if (!exists) throw new ApiError(404, "Image not found.", "MEDIA_NOT_FOUND");
-
-  const [metadata] = await file.getMetadata();
-
-  res.set("Content-Type", metadata.contentType || "application/octet-stream");
-  res.set(
-    "Cache-Control",
-    cache
-      ? "public, max-age=31536000, immutable"
-      : "private, no-store",
+export const cloudinaryConfigured = () =>
+  Boolean(
+    env.cloudinaryCloudName &&
+      env.cloudinaryApiKey &&
+      env.cloudinaryApiSecret,
   );
 
-  await new Promise((resolve, reject) => {
-    const stream = file.createReadStream();
-    stream.on("error", reject);
-    stream.on("end", resolve);
-    stream.pipe(res);
-  });
+export async function uploadCloudinaryImage(buffer, { folder, isPublic = true }) {
+  if (!cloudinaryConfigured()) {
+    throw new ApiError(
+      503,
+      "Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET on the API.",
+      "CLOUDINARY_NOT_CONFIGURED",
+    );
+  }
+
+  const { contentType } = inspectImage(buffer);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const publicId = randomUUID();
+  const safeFolder = String(folder || "misc").replace(/[^a-z0-9/_-]/gi, "");
+  const type = isPublic ? "upload" : "private";
+  const signatureText = [
+    `folder=${safeFolder}`,
+    `public_id=${publicId}`,
+    `timestamp=${timestamp}`,
+    `type=${type}`,
+  ].join("&");
+  const signature = createHash("sha1")
+    .update(`${signatureText}${env.cloudinaryApiSecret}`)
+    .digest("hex");
+  const form = new FormData();
+  const { ext } = inspectImage(buffer);
+  form.append("file", new Blob([buffer], { type: contentType }), `${publicId}.${ext}`);
+  form.append("api_key", env.cloudinaryApiKey);
+  form.append("timestamp", String(timestamp));
+  form.append("folder", safeFolder);
+  form.append("public_id", publicId);
+  form.append("type", type);
+  form.append("signature", signature);
+
+  let response;
+  try {
+    response = await fetch(
+      `https://api.cloudinary.com/v1_1/${encodeURIComponent(env.cloudinaryCloudName)}/image/upload`,
+      { method: "POST", body: form, signal: AbortSignal.timeout(20000) },
+    );
+  } catch {
+    throw new ApiError(
+      502,
+      "Could not connect to Cloudinary. Please try again.",
+      "CLOUDINARY_UNAVAILABLE",
+    );
+  }
+
+  const result = await response.json().catch(() => null);
+  if (!response.ok || !result?.secure_url || !result?.public_id) {
+    console.error("Cloudinary image upload failed:", response.status, result?.error?.message || "Invalid response");
+    throw new ApiError(
+      "Cloudinary could not store this image. Please try again.",
+      { status: 502, code: "CLOUDINARY_UPLOAD_FAILED" },
+    );
+  }
+
+  return {
+    url: result.secure_url,
+    publicId: result.public_id,
+    resourceType: result.resource_type || "image",
+    format: result.format || "",
+  };
 }
 
-export async function streamPrivateObject(objectPath, res) {
-  const cleanPath = String(objectPath || "").replace(/^\/+/, "");
-  if (!cleanPath || !cleanPath.startsWith("private/")) {
+export async function deleteCloudinaryImage(publicId) {
+  if (!cloudinaryConfigured()) {
+    throw new ApiError(
+      503,
+      "Cloudinary is not configured.",
+      "CLOUDINARY_NOT_CONFIGURED",
+    );
+  }
+
+  const timestamp = Math.floor(Date.now() / 1000);
+  const type = "upload";
+  const signature = createHash("sha1")
+    .update(
+      `public_id=${publicId}&timestamp=${timestamp}&type=${type}${env.cloudinaryApiSecret}`,
+    )
+    .digest("hex");
+  const body = new URLSearchParams({
+    public_id: publicId,
+    api_key: env.cloudinaryApiKey,
+    timestamp: String(timestamp),
+    type,
+    signature,
+  });
+
+  let response;
+  try {
+    response = await fetch(
+      `https://api.cloudinary.com/v1_1/${encodeURIComponent(env.cloudinaryCloudName)}/image/destroy`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+        signal: AbortSignal.timeout(10000),
+      },
+    );
+  } catch {
+    throw new ApiError(
+      502,
+      "Could not connect to Cloudinary to remove the completed-job image.",
+      "CLOUDINARY_UNAVAILABLE",
+    );
+  }
+
+  const result = await response.json().catch(() => null);
+  if (!response.ok || !["ok", "not found"].includes(result?.result)) {
+    throw new ApiError(
+      "Cloudinary could not remove the completed-job image.",
+      { status: 502, code: "CLOUDINARY_DELETE_FAILED" },
+    );
+  }
+}
+
+export function privateCloudinaryDownloadUrl(publicId, format) {
+  if (!cloudinaryConfigured()) {
+    throw new ApiError(
+      503,
+      "Cloudinary is not configured.",
+      "CLOUDINARY_NOT_CONFIGURED",
+    );
+  }
+  if (!publicId || !format) {
     throw new ApiError(404, "Document not found.", "MEDIA_NOT_FOUND");
   }
 
-  const file = bucket.file(cleanPath);
-  const [exists] = await file.exists();
-  if (!exists) throw new ApiError(404, "Document not found.", "MEDIA_NOT_FOUND");
-
-  const [metadata] = await file.getMetadata();
-  res.set("Content-Type", metadata.contentType || "application/octet-stream");
-  res.set("Cache-Control", "private, no-store");
-  res.set("Content-Disposition", "inline");
-
-  await new Promise((resolve, reject) => {
-    const stream = file.createReadStream();
-    stream.on("error", reject);
-    stream.on("end", resolve);
-    stream.pipe(res);
+  const cloudinary = cloudinaryPackage.v2;
+  cloudinary.config({
+    cloud_name: env.cloudinaryCloudName,
+    api_key: env.cloudinaryApiKey,
+    api_secret: env.cloudinaryApiSecret,
+    secure: true,
+  });
+  return cloudinary.utils.private_download_url(publicId, format, {
+    resource_type: "image",
+    expires_at: Math.floor(Date.now() / 1000) + 300,
+    attachment: false,
   });
 }
 
-export async function deleteObject(objectPath) {
-  if (!objectPath) return;
-  try {
-    await bucket.file(objectPath).delete({ ignoreNotFound: true });
-  } catch (error) {
-    console.warn("Failed to delete object", objectPath, error.message);
+export async function deleteStoredImage({ path, cloudinaryId }) {
+  if (cloudinaryId) {
+    await deleteCloudinaryImage(cloudinaryId);
+  }
+  if (path && !cloudinaryId) {
+    console.warn("Skipping cleanup for an image without a Cloudinary asset ID.");
   }
 }

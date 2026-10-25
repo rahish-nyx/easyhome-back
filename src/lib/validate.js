@@ -57,6 +57,8 @@ export const sessionSchema = z.object({
   name: z.string().trim().min(2).max(80).optional(),
   phone: phone.optional(),
   city: z.string().trim().max(80).optional(),
+  state: z.string().trim().max(80).optional(),
+  areaName: z.string().trim().max(80).optional(),
   service: z.string().trim().max(60).optional(),
   serviceKey: z.string().trim().max(40).optional(),
   area: z.string().trim().max(120).optional(),
@@ -96,6 +98,9 @@ export const workerProfileSchema = z.object({
   service: z.string().trim().max(60).optional(),
   serviceKey: z.string().trim().max(40).optional(),
   area: z.string().trim().max(120).optional(),
+  city: z.string().trim().max(80).optional(),
+  state: z.string().trim().max(80).optional(),
+  areaName: z.string().trim().max(80).optional(),
   bio: z.string().trim().max(400).optional(),
   pricePerWork: z.coerce.number().int().min(0).max(100000).optional(),
   upiId: z.string().trim().max(80).optional(),
@@ -115,8 +120,9 @@ export const bookingSchema = z.object({
   area: z.string().trim().min(2).max(160),
   city: z.string().trim().max(80).optional(),
   state: z.string().trim().max(80).optional(),
-  lat: coord.nullable().optional(),
-  lng: coord.nullable().optional(),
+  areaName: z.string().trim().max(80).optional(),
+  lat: coord.min(-90).max(90).nullable().optional(),
+  lng: coord.min(-180).max(180).nullable().optional(),
   phone: phone,
   budget: z.coerce.number().int().min(99).max(100000),
   urgency: z.enum(["normal", "urgent"]).default("normal"),
@@ -193,7 +199,17 @@ export const promoSchema = z.object({
   title: z.string().trim().min(2).max(80),
   subtitle: z.string().trim().max(140).optional().default(""),
   ctaText: z.string().trim().max(30).optional().default("Book now"),
-  ctaLink: z.string().trim().max(200).optional().default("/"),
+  ctaLink: z
+    .string()
+    .trim()
+    .max(200)
+    .optional()
+    .default("/")
+    .refine(
+      (path) => !path || (path.startsWith("/") && !path.startsWith("//") && !path.includes("\\")),
+      "Promo destinations must be internal paths.",
+    ),
+  placement: z.enum(["customer_home", "worker_dashboard"]).default("customer_home"),
   theme: z.enum(["yellow", "dark", "blue", "orange"]).default("yellow"),
   imagePath: z.string().trim().max(300).optional().default(""),
   active: formBoolean.default(true),
@@ -202,9 +218,36 @@ export const promoSchema = z.object({
   endsAt: z.string().datetime().optional().or(z.literal("")),
 });
 
+export const footerLinkSchema = z.object({
+  label: z.string().trim().min(2).max(50),
+  href: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .refine(
+      (path) => path.startsWith("/") && !path.startsWith("//") && !path.includes("\\"),
+      "Footer links must use an internal path.",
+    )
+    .refine((href) => {
+      const path = href.split(/[?#]/, 1)[0].replace(/\/+$/, "") || "/";
+      return (
+        ["/", "/services", "/search", "/book", "/bookings", "/profile", "/subscription", "/chat", "/faq", "/auth", "/worker", "/worker/support"].includes(path) ||
+        /^\/services\/[a-zA-Z0-9_-]+$/.test(path) ||
+        /^\/workers\/[a-zA-Z0-9_-]+$/.test(path) ||
+        /^\/bookings\/[a-zA-Z0-9_-]+\/track$/.test(path) ||
+        /^\/legal\/[a-zA-Z0-9_-]+$/.test(path)
+      );
+    }, "Choose a supported EasyHome page destination."),
+  group: z.enum(["company", "legal", "support", "services", "professionals"]).default("legal"),
+  active: formBoolean.default(true),
+  order: z.coerce.number().int().min(0).max(999).default(0),
+});
+
 export const serviceZoneSchema = z.object({
   state: z.string().trim().min(2).max(80),
   cityName: z.string().trim().min(2).max(80),
+  areaName: z.string().trim().max(80).optional().default(""),
   latitude: z.coerce.number().min(-90).max(90),
   longitude: z.coerce.number().min(-180).max(180),
   radiusKm: z.coerce.number().min(0.5).max(200).default(10),

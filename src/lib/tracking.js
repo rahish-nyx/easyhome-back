@@ -85,6 +85,8 @@ export function phaseHistoryEntry({
   note = "",
 }) {
   const meta = PHASE_META[phase] || {};
+  const latitude = lat === null || lat === undefined ? null : Number(lat);
+  const longitude = lng === null || lng === undefined ? null : Number(lng);
   return {
     phase,
     status: status || meta.status || "",
@@ -92,8 +94,8 @@ export function phaseHistoryEntry({
     actorId,
     actorRole,
     note: String(note || "").slice(0, 240),
-    lat: Number.isFinite(Number(lat)) ? Number(lat) : null,
-    lng: Number.isFinite(Number(lng)) ? Number(lng) : null,
+    lat: Number.isFinite(latitude) ? latitude : null,
+    lng: Number.isFinite(longitude) ? longitude : null,
     at: Timestamp.now(),
   };
 }
@@ -126,11 +128,19 @@ export function isStaleJob(booking, now = Date.now()) {
 }
 
 export function trackingEta(booking, worker) {
-  const lat = Number(booking?.currentLat ?? worker?.lat);
-  const lng = Number(booking?.currentLng ?? worker?.lng);
-  const targetLat = Number(booking?.location?.lat);
-  const targetLng = Number(booking?.location?.lng);
+  const latitude = booking?.currentLat ?? worker?.lat;
+  const longitude = booking?.currentLng ?? worker?.lng;
+  const targetLatitude = booking?.location?.lat;
+  const targetLongitude = booking?.location?.lng;
+  const lat = latitude == null ? null : Number(latitude);
+  const lng = longitude == null ? null : Number(longitude);
+  const targetLat = targetLatitude == null ? null : Number(targetLatitude);
+  const targetLng = targetLongitude == null ? null : Number(targetLongitude);
   if (
+    lat === null ||
+    lng === null ||
+    targetLat === null ||
+    targetLng === null ||
     !Number.isFinite(lat) ||
     !Number.isFinite(lng) ||
     !Number.isFinite(targetLat) ||

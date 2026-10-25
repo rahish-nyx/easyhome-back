@@ -6,7 +6,6 @@ import {
 } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
-import { getStorage } from "firebase-admin/storage";
 import { env } from "./env.js";
 
 function buildCredential() {
@@ -30,7 +29,6 @@ function createApp() {
   const credential = buildCredential();
   const options = {
     projectId: env.projectId,
-    ...(env.storageBucket ? { storageBucket: env.storageBucket } : {}),
     ...(credential ? { credential } : {}),
   };
 
@@ -54,7 +52,6 @@ try {
 }
 
 export const auth = getAuth(app);
-export const bucket = getStorage(app).bucket(env.storageBucket || undefined);
 
 export const collections = {
   users: db.collection("users"),
@@ -70,6 +67,7 @@ export const collections = {
   serviceZones: db.collection("service_zones"),
   serviceWaitlist: db.collection("service_waitlist"),
   promos: db.collection("promos"),
+  footerLinks: db.collection("footer_links"),
   subscriptions: db.collection("subscriptions"),
   commissions: db.collection("commissions"),
   payments: db.collection("payments"),

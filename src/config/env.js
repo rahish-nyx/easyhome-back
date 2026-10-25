@@ -13,10 +13,31 @@ const asList = (value, fallback = []) => {
     .filter(Boolean);
 };
 
+function cloudinaryCredentials() {
+  let cloudinaryCloudName = process.env.CLOUDINARY_CLOUD_NAME || "";
+  let cloudinaryApiKey = process.env.CLOUDINARY_API_KEY || "";
+  let cloudinaryApiSecret = process.env.CLOUDINARY_API_SECRET || "";
+  const cloudinaryUrl = process.env.CLOUDINARY_URL || "";
+
+  if ((!cloudinaryCloudName || !cloudinaryApiKey || !cloudinaryApiSecret) && cloudinaryUrl) {
+    try {
+      const parsed = new URL(cloudinaryUrl);
+      if (parsed.protocol === "cloudinary:") {
+        cloudinaryCloudName ||= parsed.hostname;
+        cloudinaryApiKey ||= decodeURIComponent(parsed.username);
+        cloudinaryApiSecret ||= decodeURIComponent(parsed.password);
+      }
+    } catch {
+      console.warn("CLOUDINARY_URL is invalid; explicit Cloudinary variables may be used instead.");
+    }
+  }
+
+  return { cloudinaryCloudName, cloudinaryApiKey, cloudinaryApiSecret };
+}
+
 const emulator = Boolean(
   process.env.FIRESTORE_EMULATOR_HOST ||
-    process.env.FIREBASE_AUTH_EMULATOR_HOST ||
-    process.env.FIREBASE_STORAGE_EMULATOR_HOST,
+    process.env.FIREBASE_AUTH_EMULATOR_HOST,
 );
 
 const missing = [];
@@ -56,6 +77,7 @@ const projectId =
   process.env.FIREBASE_PROJECT_ID ||
   process.env.GCLOUD_PROJECT ||
   "demo-easyhome";
+const cloudinary = cloudinaryCredentials();
 
 export const env = {
   nodeEnv: process.env.NODE_ENV || "development",
@@ -67,7 +89,6 @@ export const env = {
   clientEmail: process.env.FIREBASE_CLIENT_EMAIL || "",
   privateKey: (process.env.FIREBASE_PRIVATE_KEY || "").replace(/\\n/g, "\n"),
   serviceAccountJson: process.env.FIREBASE_SERVICE_ACCOUNT_JSON || "",
-  storageBucket: process.env.FIREBASE_STORAGE_BUCKET || "",
   corsOrigins: asList(process.env.CORS_ORIGINS, [
     "http://localhost:5173",
     "http://localhost:4173",
@@ -89,4 +110,5 @@ export const env = {
   enableDemoData: asBool(process.env.ENABLE_DEMO_DATA, false),
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || "",
   adminTelegramChatId: process.env.ADMIN_TELEGRAM_CHAT_ID || "",
+  ...cloudinary,
 };

@@ -207,6 +207,19 @@ const promos = [
   },
 ];
 
+const footerLinks = [
+  { id: "footer-about", label: "About us", href: "/legal/about", group: "company", order: 1 },
+  { id: "footer-faq", label: "FAQ", href: "/faq", group: "support", order: 1 },
+  { id: "footer-terms", label: "Terms and Conditions", href: "/legal/terms", group: "legal", order: 1 },
+  { id: "footer-privacy", label: "Privacy policy", href: "/legal/privacy", group: "legal", order: 2 },
+  { id: "footer-refunds", label: "Refund & cancellation policy", href: "/legal/refunds", group: "legal", order: 3 },
+  { id: "footer-disclaimer", label: "Disclaimer", href: "/legal/disclaimer", group: "legal", order: 4 },
+  { id: "footer-support", label: "Help & support", href: "/chat", group: "support", order: 2 },
+  { id: "footer-become-pro", label: "Become a pro", href: "/auth?role=worker", group: "professionals", order: 1 },
+  { id: "footer-worker", label: "Worker dashboard", href: "/worker", group: "professionals", order: 2 },
+  { id: "footer-membership", label: "EasyHome Pro", href: "/subscription", group: "professionals", order: 3 },
+];
+
 async function seedAdmin() {
   if (!env.adminEmail || !env.adminPassword) {
     console.log("⚠  ADMIN_EMAIL / ADMIN_PASSWORD not set — skipping admin account.");
@@ -339,6 +352,20 @@ async function main() {
       { merge: true },
     );
     batch.push(`promo:${id}`);
+  }
+
+  for (const link of footerLinks) {
+    const { id, ...data } = link;
+    const ref = collections.footerLinks.doc(id);
+    if (!(await ref.get()).exists) {
+      await ref.set({
+        ...data,
+        active: true,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      batch.push(`footer-link:${id}`);
+    }
   }
 
   const settingsRef = collections.settings.doc("app");

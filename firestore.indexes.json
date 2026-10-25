@@ -38,6 +38,7 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "serviceKey", "order": "ASCENDING" },
+        { "fieldPath": "workerId", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
@@ -152,6 +153,15 @@
       "fields": [
         { "fieldPath": "serviceKey", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "city", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "online", "order": "ASCENDING" }
       ]
     }
   ],
