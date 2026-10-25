@@ -3,7 +3,7 @@ import cloudinaryPackage from "cloudinary";
 import { env } from "../config/env.js";
 import { ApiError } from "../middleware/errors.js";
 
-const MAX_BYTES = 5 * 1024 * 1024;
+const MAX_BYTES = 4 * 1024 * 1024;
 
 const SIGNATURES = [
   {
@@ -43,7 +43,7 @@ function inspectImage(buffer) {
     throw new ApiError(400, "The uploaded file is empty.", "EMPTY_FILE");
   }
   if (buffer.length > MAX_BYTES) {
-    throw new ApiError(413, "Image is too large. Maximum size is 5 MB.", "FILE_TOO_LARGE");
+    throw new ApiError(413, "Image is too large. Maximum size is 4 MB.", "FILE_TOO_LARGE");
   }
   const match = SIGNATURES.find((signature) => signature.test(buffer));
   if (!match) {
