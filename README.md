@@ -71,6 +71,22 @@ npm run check   # syntax-check every source file
 
 Health check: `GET /health` -> `{ ok: true, service: "easyhome-api", version: 2 }`.
 
+### Deploy the API to Vercel
+
+Create a separate Vercel project for this repository and set its Root Directory
+to `backend` (or the repository root when this repository is connected directly).
+The `api/index.js` entry exports the Express app as a serverless function, and
+`vercel.json` routes API requests to it. Set the required Firebase Admin,
+Cloudinary, CORS, email, payment and Telegram environment variables in Vercel;
+never commit production secrets. Set `NODE_ENV=production`, and include the
+deployed frontend origin in `CORS_ORIGINS`.
+
+Vercel functions are ephemeral and may run concurrently. The local tracking
+watchdog started by `src/index.js` does not run in the Vercel function; use a
+scheduled Vercel Cron invocation or an external scheduler for any periodic
+tracking/accountability checks. In-memory rate limits are also per function
+instance rather than globally shared.
+
 ## Environment highlights
 
 | Variable | Purpose |

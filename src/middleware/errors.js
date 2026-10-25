@@ -35,7 +35,7 @@ export function errorHandler(err, req, res, _next) {
 
   if (err?.code === "LIMIT_FILE_SIZE") {
     return res.status(413).json({
-      error: "Image is too large. Maximum size is 5 MB.",
+      error: "Image is too large. Maximum size is 4 MB.",
       code: "FILE_TOO_LARGE",
     });
   }
