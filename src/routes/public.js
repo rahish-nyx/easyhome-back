@@ -470,16 +470,17 @@ publicRouter.get(
     const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50);
     const serviceKey = req.query.serviceKey ? String(req.query.serviceKey) : "";
 
-    let queryRef = collections.workersPublic.orderBy("rating", "desc");
+    let queryRef = collections.workersPublic;
     if (serviceKey) {
-      queryRef = collections.workersPublic
-        .where("serviceKey", "==", serviceKey)
-        .orderBy("rating", "desc");
+      queryRef = collections.workersPublic.where("serviceKey", "==", serviceKey);
     }
 
-    const snap = await queryRef.limit(limit).get();
+    const snap = await queryRef.limit(500).get();
+    const workers = prioritizeWorkers(docsToJson(snap), premiumActive)
+      .map((worker) => ({ ...worker, isPremium: premiumActive(worker) }))
+      .slice(0, limit);
     res.set("Cache-Control", "public, max-age=60");
-    res.json({ workers: docsToJson(snap) });
+    res.json({ workers });
   }),
 );
 
@@ -499,8 +500,12 @@ publicRouter.get(
       return res.status(404).json({ error: "Worker not found", code: "NOT_FOUND" });
     }
 
+    const worker = docToJson(workerSnap);
     return res.json({
-      worker: docToJson(workerSnap),
+      worker: {
+        ...worker,
+        isPremium: premiumActive(worker),
+      },
       reviews: docsToJson(reviewsSnap),
     });
   }),

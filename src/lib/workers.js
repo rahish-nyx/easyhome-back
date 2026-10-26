@@ -42,6 +42,7 @@ export async function syncPublicWorker(uid) {
     rating: Number(worker.rating) || 0,
     reviewCount: Number(worker.reviewCount) || 0,
     jobsCompleted: Number(worker.jobsCompleted) || 0,
+    kycStatus: worker.kycStatus || "not_submitted",
     premiumUntil: worker.premiumUntil || null,
     isPremium: premiumActive(worker),
     updatedAt: new Date(),

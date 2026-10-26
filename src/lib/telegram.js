@@ -135,14 +135,14 @@ export function subscriptionPaidTelegramMessage({
   orderId,
 }) {
   return [
-    "? NEW RAZORPAY SUBSCRIPTION",
-    `?? User: ${name || "Unknown"}${email ? ` (${email})` : ""}`,
-    `????? Role: ${role === "worker" ? "Worker" : "Customer"}`,
-    `??? Plan: ${planLabel || "Membership"} � ${months || 1} month${Number(months) > 1 ? "s" : ""}`,
-    `?? Amount: ?${Number(amount) || 0}`,
-    `?? Payment ID: ${paymentId || "�"}`,
-    `?? Order ID: ${orderId || "�"}`,
-    "? Status: Auto-verified ?",
+    "💳 NEW RAZORPAY SUBSCRIPTION",
+    `👤 User: ${name || "Unknown"}${email ? ` (${email})` : ""}`,
+    `👷 Role: ${role === "worker" ? "Worker" : "Customer"}`,
+    `📦 Plan: ${planLabel || "Membership"} — ${months || 1} month${Number(months) > 1 ? "s" : ""}`,
+    `💰 Amount: ₹${Number(amount) || 0}`,
+    `🆔 Payment ID: ${paymentId || "—"}`,
+    `🧾 Order ID: ${orderId || "—"}`,
+    "✅ Status: Auto-verified",
   ].join("\n");
 }
 
@@ -156,13 +156,13 @@ export function commissionPaidTelegramMessage({
   orderId,
 }) {
   return [
-    "? WORKER COMMISSION CLEARED",
-    `?? Worker: ${workerName || workerId || "Unknown"}`,
-    `?? Amount: ?${Number(amount) || 0}`,
-    `?? Payment ID: ${paymentId || "�"}`,
-    `?? Order ID: ${orderId || "�"}`,
-    `??? Job: ${service || "Service job"}`,
-    `?? Booking: ${bookingId || "�"}`,
-    "? Status: Auto-verified ?",
+    "✅ WORKER COMMISSION CLEARED",
+    `👷 Worker: ${workerName || workerId || "Unknown"}`,
+    `💰 Amount: ₹${Number(amount) || 0}`,
+    `🆔 Payment ID: ${paymentId || "—"}`,
+    `🧾 Order ID: ${orderId || "—"}`,
+    `🔧 Job: ${service || "Service job"}`,
+    `🆔 Booking: ${bookingId || "—"}`,
+    "✅ Status: Auto-verified",
   ].join("\n");
 }

@@ -11,6 +11,7 @@ import { upload } from "../middleware/upload.js";
 import { sessionSchema, profileSchema, workerProfileSchema } from "../lib/validate.js";
 import { uploadCloudinaryImage } from "../lib/media.js";
 import { notify, notifyAdmins } from "../lib/notify.js";
+import { applyReferralForNewUser } from "../lib/referrals.js";
 import { docToJson, normalizePhone } from "../lib/utils.js";
 import { WORKER_STATUS } from "../lib/booking.js";
 
@@ -116,12 +117,28 @@ authRouter.post(
       emailVerified: req.user.emailVerified,
       disabled: false,
       subscription,
+      referralCode: "",
+      referredBy: "",
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
       lastLoginAt: FieldValue.serverTimestamp(),
     };
 
     await userRef.set(userDoc);
+
+    let referral = null;
+    if (role === "customer" && body.referralCode) {
+      referral = await applyReferralForNewUser({
+        code: body.referralCode,
+        uid,
+        name,
+        email,
+        role,
+      }).catch((error) => {
+        console.warn("Referral capture failed:", error.message);
+        return null;
+      });
+    }
 
     if (role === "worker") {
       const workerDoc = {
@@ -170,6 +187,7 @@ authRouter.post(
       isAdmin: adminNow,
       created: true,
       needsClaimRefresh: true,
+      referralApplied: Boolean(referral?.applied),
     });
   }),
 );

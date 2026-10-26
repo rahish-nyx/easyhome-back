@@ -17,6 +17,7 @@ import {
   appSettings,
   canAcceptJobs,
   commissionFor,
+  customerPremiumActive,
   premiumActive,
 } from "../lib/booking.js";
 import { nearestServiceArea } from "../lib/geo.js";
@@ -35,7 +36,7 @@ import {
   trackingEta,
   trackingSnapshot,
 } from "../lib/tracking.js";
-import { docToJson, docsToJson, normalizePhone } from "../lib/utils.js";
+import { docToJson, docsToJson, normalizePhone, toDate } from "../lib/utils.js";
 
 export const customerRouter = Router();
 
@@ -153,6 +154,18 @@ customerRouter.post(
         lng: hasCoords ? Number(body.lng) : null,
       },
     };
+    const warnings = [];
+    const customerSnap = await collections.users.doc(uid).get();
+    const customer = customerSnap.exists ? customerSnap.data() : {};
+    const customerPremium = customerPremiumActive(customer);
+    const freeCancellationMinutes = customerPremium ? 20 : 7;
+    const baseBudget = Math.round(body.budget);
+    const urgentFee =
+      body.urgency === "urgent" && !customerPremium
+        ? Math.round(baseBudget * 0.1)
+        : 0;
+    const estimatedTotal = baseBudget + urgentFee;
+
     const workersSnap = await collections.workers
       .where("serviceKey", "==", service.key)
       .where("status", "==", "approved")
@@ -188,7 +201,6 @@ customerRouter.post(
 
     let imagePath = "";
     let imageCloudinaryId = "";
-    const warnings = [];
     if (req.file) {
       try {
         const uploaded = await uploadCloudinaryImage(req.file.buffer, {
@@ -207,14 +219,14 @@ customerRouter.post(
       }
     }
 
-    const customerSnap = await collections.users.doc(uid).get();
-    const customer = customerSnap.exists ? customerSnap.data() : {};
-
     const bookingRef = collections.bookings.doc();
     const bookingId = bookingRef.id;
     const now = FieldValue.serverTimestamp();
     const roundedLat = hasCoords ? Math.round(Number(body.lat) * 1000) / 1000 : null;
     const roundedLng = hasCoords ? Math.round(Number(body.lng) * 1000) / 1000 : null;
+    const freeCancellationUntil = Timestamp.fromDate(
+      new Date(Date.now() + freeCancellationMinutes * 60_000),
+    );
 
     const bookingDoc = {
       customerId: uid,
@@ -241,8 +253,15 @@ customerRouter.post(
       serviceZoneLatitude: zoneCheck.zone?.latitude ?? null,
       serviceZoneLongitude: zoneCheck.zone?.longitude ?? null,
       serviceZoneRadiusKm: zoneCheck.zone?.radiusKm ?? null,
-      budget: Math.round(body.budget),
+      budget: baseBudget,
       urgency: body.urgency,
+      urgentFee,
+      urgentFeeWaived: body.urgency === "urgent" && customerPremium,
+      estimatedTotal,
+      customerPremium,
+      customerPriority: customerPremium ? "pro" : "standard",
+      freeCancellationMinutes,
+      freeCancellationUntil,
       status: "pending",
       activeJob: false,
       trackingPhase: null,
@@ -271,6 +290,9 @@ customerRouter.post(
       ...(imageCloudinaryId ? { imageCloudinaryId } : {}),
       preferredWorkerId: body.preferredWorkerId || "",
       pricing: {
+        basePrice: baseBudget,
+        urgentFee,
+        estimatedTotal,
         workerPrice: null,
         customerOffer: null,
         finalPrice: null,
@@ -336,8 +358,10 @@ customerRouter.post(
                 serviceZoneLatitude: zoneCheck.zone?.latitude ?? null,
                 serviceZoneLongitude: zoneCheck.zone?.longitude ?? null,
                 serviceZoneRadiusKm: zoneCheck.zone?.radiusKm ?? null,
-                priority: premiumActive(worker) ? "pro" : "standard",
-                budget: Math.round(body.budget),
+                priority: customerPremium ? "pro" : "standard",
+                customerPremium,
+                customerPriority: customerPremium ? "pro" : "standard",
+                budget: baseBudget,
                 urgency: body.urgency,
                 status: "open",
                 preferredWorkerId: body.preferredWorkerId || "",
@@ -359,13 +383,19 @@ customerRouter.post(
               const ref = collections.notifications.doc();
               notifBatch.set(ref, {
                 userId: worker.id,
-                title:
-                  body.urgency === "urgent"
+                title: customerPremium
+                  ? body.urgency === "urgent"
+                    ? "Priority urgent job near you"
+                    : "Priority job near you"
+                  : body.urgency === "urgent"
                     ? "Urgent job near you"
                     : "New job near you",
-                body: `${service.name} · ${body.area} · ₹${Math.round(body.budget)}`,
+                body: `${service.name} · ${body.area} · ₹${baseBudget}${
+                  customerPremium ? " · Pro customer" : ""
+                }`,
                 type: "new_job",
                 priority: premiumActive(worker) ? "pro" : "standard",
+                customerPriority: customerPremium ? "pro" : "standard",
                 link: `/worker?job=${bookingId}`,
                 read: false,
                 createdAt: now,
@@ -507,7 +537,10 @@ customerRouter.patch(
     const ref = collections.bookings.doc(req.params.id);
 
     const result = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
+      const [snap, customerSnap] = await Promise.all([
+        tx.get(ref),
+        tx.get(collections.users.doc(req.user.uid)),
+      ]);
       if (!snap.exists) throw new ApiError(404, "Booking not found.", "BOOKING_NOT_FOUND");
       const data = snap.data();
       if (data.customerId !== req.user.uid) {
@@ -523,6 +556,28 @@ customerRouter.patch(
           "JOB_STARTED",
         );
       }
+
+      const customer = customerSnap.exists ? customerSnap.data() : {};
+      const premium = customerPremiumActive(customer);
+      const windowMinutes = premium ? 20 : 7;
+      const createdAt = toDate(data.createdAt);
+      const fallbackDeadline = toDate(data.freeCancellationUntil);
+      const deadline = createdAt
+        ? createdAt.getTime() + windowMinutes * 60_000
+        : fallbackDeadline
+          ? fallbackDeadline.getTime()
+          : null;
+      if (deadline && Date.now() > deadline) {
+        throw new ApiError(
+          409,
+          premium
+            ? "Your 20-minute free cancellation window has closed. Contact support and we will help."
+            : "The 7-minute free cancellation window has closed. Contact support and we will help.",
+          "CANCELLATION_WINDOW_CLOSED",
+          { windowMinutes, deadline: new Date(deadline).toISOString() },
+        );
+      }
+
       tx.update(ref, {
         status: "cancelled",
         activeJob: false,
@@ -593,12 +648,18 @@ customerRouter.patch(
       const finalPrice = Math.round(
         booking.pricing?.finalPrice || booking.pricing?.workerPrice || booking.budget,
       );
+      const urgentFee = Math.max(0, Math.round(Number(booking.urgentFee) || 0));
+      const paymentTotal = finalPrice + urgentFee;
       const premium = premiumActive(worker);
-      const { commission, workerReceives } = commissionFor(
+      const { commission, workerReceives: serviceEarnings } = commissionFor(
         finalPrice,
         settings.commissionPct,
         { premium },
       );
+      // Urgent jobs may carry a platform-set priority fee. It is paid directly
+      // to the professional with the service amount; commission still applies
+      // only to the agreed service price.
+      const workerReceives = serviceEarnings + urgentFee;
 
       tx.update(ref, {
         paidAt: FieldValue.serverTimestamp(),
@@ -606,6 +667,8 @@ customerRouter.patch(
         paymentReference: reference || "",
         status: "completed",
         "pricing.finalPrice": finalPrice,
+        "pricing.urgentFee": urgentFee,
+        "pricing.paymentTotal": paymentTotal,
         "pricing.commission": commission,
         "pricing.workerReceives": workerReceives,
         updatedAt: FieldValue.serverTimestamp(),
@@ -632,7 +695,7 @@ customerRouter.patch(
         });
       }
 
-      return { booking, commission, workerReceives, premium };
+      return { booking, commission, workerReceives, premium, urgentFee, paymentTotal };
     });
 
     await notify(result.booking.workerId, {
@@ -649,6 +712,8 @@ customerRouter.patch(
       ok: true,
       commission: result.commission,
       workerReceives: result.workerReceives,
+      urgentFee: result.urgentFee,
+      paymentTotal: result.paymentTotal,
     });
   }),
 );
@@ -841,6 +906,10 @@ customerRouter.post(
 
     const userSnap = await collections.users.doc(uid).get();
     const user = userSnap.exists ? userSnap.data() : {};
+    const supportPriority =
+      (user.role || "customer") === "customer" && customerPremiumActive(user)
+        ? "pro"
+        : "standard";
 
     await db.runTransaction(async (tx) => {
       tx.set(messageRef, {
@@ -858,10 +927,14 @@ customerRouter.post(
           name: user.name || "User",
           role: user.role || "customer",
           email: user.email || req.user.email,
+          photoPath: user.photoPath || "",
           lastMessage: text.slice(0, 120),
           lastAt: now,
           unreadForAdmin: FieldValue.increment(1),
           unreadForUser: 0,
+          priority: supportPriority,
+          customerPremium: supportPriority === "pro",
+          prioritySince: supportPriority === "pro" ? now : null,
           updatedAt: now,
           createdAt: user.createdAt || now,
         },
@@ -870,6 +943,106 @@ customerRouter.post(
     });
 
     res.status(201).json({ ok: true, messageId: messageRef.id });
+  }),
+);
+
+customerRouter.post(
+  "/chat/request-call",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const uid = req.user.uid;
+    const userSnap = await collections.users.doc(uid).get();
+    const user = userSnap.exists ? userSnap.data() : {};
+    const phone = normalizePhone(user.phone || "");
+    if (!phone) {
+      throw new ApiError(
+        422,
+        "Add a mobile number to your profile so support can call you back.",
+        "PHONE_REQUIRED",
+      );
+    }
+
+    const existing = await collections.callRequests
+      .where("userId", "==", uid)
+      .where("status", "==", "pending")
+      .limit(1)
+      .get();
+    if (!existing.empty) {
+      return res.json({ ok: true, requestId: existing.docs[0].id, duplicate: true });
+    }
+
+    const priority =
+      (user.role || "customer") === "customer" && customerPremiumActive(user)
+        ? "pro"
+        : "standard";
+    const ref = collections.callRequests.doc();
+    await ref.set({
+      userId: uid,
+      name: user.name || "EasyHome user",
+      email: user.email || req.user.email || "",
+      phone,
+      role: user.role || "customer",
+      priority,
+      status: "pending",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    await collections.chatThreads.doc(uid).set(
+      {
+        callRequested: true,
+        callRequestedAt: FieldValue.serverTimestamp(),
+        priority,
+        customerPremium: priority === "pro",
+      },
+      { merge: true },
+    );
+
+    await notifyAdmins({
+      title: `${priority === "pro" ? "Priority call" : "Call"} request from ${user.name || "a user"}`,
+      body: `${phone} · ${user.role === "worker" ? "Professional" : "Customer"}`,
+      type: "call_request",
+      link: "/admin/chats",
+    });
+
+    res.status(201).json({ ok: true, requestId: ref.id });
+  }),
+);
+
+customerRouter.post(
+  "/chat/end",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const threadRef = collections.chatThreads.doc(req.user.uid);
+
+    for (;;) {
+      const snap = await threadRef.collection("messages").limit(400).get();
+      if (snap.empty) break;
+      const batch = db.batch();
+      snap.docs.forEach((doc) => batch.delete(doc.ref));
+      await batch.commit();
+    }
+
+    await threadRef.delete().catch(() => {});
+
+    const pendingCalls = await collections.callRequests
+      .where("userId", "==", req.user.uid)
+      .where("status", "==", "pending")
+      .limit(20)
+      .get();
+    if (!pendingCalls.empty) {
+      const batch = db.batch();
+      pendingCalls.docs.forEach((doc) =>
+        batch.update(doc.ref, {
+          status: "dismissed",
+          dismissedByUser: true,
+          updatedAt: FieldValue.serverTimestamp(),
+        }),
+      );
+      await batch.commit();
+    }
+
+    res.json({ ok: true });
   }),
 );
 

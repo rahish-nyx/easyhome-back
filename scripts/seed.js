@@ -198,10 +198,10 @@ const promos = [
   },
   {
     id: "refer-earn",
-    title: "Refer & earn ₹100",
-    subtitle: "Share EasyHome with a neighbour. You both get ₹100 after their first booking.",
-    ctaText: "Invite a friend",
-    ctaLink: "/profile",
+    title: "Refer & earn ₹51 each",
+    subtitle: "Invite a new customer. After their first completed service and admin verification, you both get ₹51 approved.",
+    ctaText: "Refer a friend",
+    ctaLink: "/refer",
     theme: "blue",
     order: 3,
   },
@@ -215,6 +215,7 @@ const footerLinks = [
   { id: "footer-refunds", label: "Refund & cancellation policy", href: "/legal/refunds", group: "legal", order: 3 },
   { id: "footer-disclaimer", label: "Disclaimer", href: "/legal/disclaimer", group: "legal", order: 4 },
   { id: "footer-support", label: "Help & support", href: "/chat", group: "support", order: 2 },
+  { id: "footer-refer", label: "Refer & Earn", href: "/refer", group: "support", order: 3 },
   { id: "footer-become-pro", label: "Become a pro", href: "/auth?role=worker", group: "professionals", order: 1 },
   { id: "footer-worker", label: "Worker dashboard", href: "/worker", group: "professionals", order: 2 },
   { id: "footer-membership", label: "EasyHome Pro", href: "/subscription", group: "professionals", order: 3 },
@@ -375,10 +376,11 @@ async function main() {
     commissionPct: env.commissionPct,
     subscriptionPrice: env.subscriptionPrice,
     customerBenefits: [
-      "Priority worker matching",
-      "Discounted service visits",
+      "Active priority worker matching",
+      "No 10% urgent-job extra charge",
       "24×7 priority support",
-      "Free cancellation up to 1 hour",
+      "Free cancellation for 20 minutes (7 for non-Pro)",
+      "Verified Pro badge",
     ],
     workerBenefits: [
       "0% commission on every job",
@@ -398,6 +400,8 @@ async function main() {
     {
       ...defaultSettings,
       ...existingSettings,
+      customerBenefits: defaultSettings.customerBenefits,
+      workerBenefits: defaultSettings.workerBenefits,
       upiId:
         currentUpi && currentUpi !== "easyhome@upi"
           ? currentUpi

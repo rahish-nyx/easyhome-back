@@ -24,6 +24,7 @@ import {
 } from "../lib/media.js";
 import { workerMatchesBooking } from "../lib/matching.js";
 import { jobFeedDocId, updateJobFeedStatus } from "../lib/jobFeed.js";
+import { markReferralServiceCompleted } from "../lib/referrals.js";
 import { notify, notifyAdmins, sendMail, emailLayout } from "../lib/notify.js";
 import {
   commissionTelegramMessage,
@@ -558,6 +559,12 @@ workerRouter.patch(
 
     if (result.phase === TRACKING_PHASES.COMPLETED) {
       await removeCompletedBookingImage(result.booking, bookingRef);
+      await markReferralServiceCompleted(
+        result.booking.customerId,
+        req.params.id,
+      ).catch((error) => {
+        console.warn("Referral completion update failed:", error.message);
+      });
     }
 
     if (!result.unchanged) {
@@ -714,6 +721,13 @@ workerRouter.patch(
       body: `Confirm the payment for ${result.booking.service} and leave a review.`,
       type: "job_completed",
       link: "/bookings",
+    });
+
+    await markReferralServiceCompleted(
+      result.booking.customerId,
+      bookingRef.id,
+    ).catch((error) => {
+      console.warn("Referral completion update failed:", error.message);
     });
 
     res.json({ ok: true, phase: TRACKING_PHASES.COMPLETED });

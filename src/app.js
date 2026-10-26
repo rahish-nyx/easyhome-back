@@ -15,6 +15,7 @@ import { adminCatalogRouter } from "./routes/adminCatalog.js";
 import { adminMoneyRouter } from "./routes/adminMoney.js";
 import { adminZonesRouter } from "./routes/adminZones.js";
 import { paymentRouter } from "./routes/payment.js";
+import { referralRouter } from "./routes/referrals.js";
 
 export const app = express();
 
@@ -110,6 +111,7 @@ app.get("/health", (_req, res) => {
 
 app.use("/api/public", publicRouter);
 app.use("/api/auth", authRouter);
+app.use("/api/referrals", referralRouter);
 app.use("/api", customerRouter);
 app.use("/api", workerRouter);
 app.use("/api/payment", paymentRouter);

@@ -496,9 +496,15 @@ adminRouter.get(
   asyncHandler(async (_req, res) => {
     const snap = await collections.chatThreads
       .orderBy("lastAt", "desc")
-      .limit(60)
+      .limit(200)
       .get();
-    res.json({ threads: docsToJson(snap) });
+    const threads = docsToJson(snap).sort((a, b) => {
+      const aPro = a.priority === "pro" ? 1 : 0;
+      const bPro = b.priority === "pro" ? 1 : 0;
+      if (aPro !== bPro) return bPro - aPro;
+      return 0;
+    });
+    res.json({ threads });
   }),
 );
 
@@ -569,6 +575,201 @@ adminRouter.post(
     });
 
     res.status(201).json({ ok: true, messageId: messageRef.id });
+  }),
+);
+
+adminRouter.post(
+  "/chats/:uid/end",
+  asyncHandler(async (req, res) => {
+    const uid = req.params.uid;
+    const threadRef = collections.chatThreads.doc(uid);
+
+    for (;;) {
+      const snap = await threadRef.collection("messages").limit(400).get();
+      if (snap.empty) break;
+      const batch = db.batch();
+      snap.docs.forEach((doc) => batch.delete(doc.ref));
+      await batch.commit();
+    }
+
+    await threadRef.delete().catch(() => {});
+    await collections.callRequests
+      .where("userId", "==", uid)
+      .where("status", "==", "pending")
+      .limit(20)
+      .get()
+      .then((snap) => {
+        if (snap.empty) return null;
+        const batch = db.batch();
+        snap.docs.forEach((doc) =>
+          batch.update(doc.ref, {
+            status: "dismissed",
+            handledBy: req.user.uid,
+            handledAt: FieldValue.serverTimestamp(),
+          }),
+        );
+        return batch.commit();
+      })
+      .catch(() => {});
+
+    await audit(req.user.uid, "chat.end", { uid });
+    res.json({ ok: true });
+  }),
+);
+
+/* ------------------------------ CALL REQUESTS ----------------------------- */
+
+adminRouter.get(
+  "/call-requests",
+  asyncHandler(async (_req, res) => {
+    const snap = await collections.callRequests
+      .where("status", "==", "pending")
+      .limit(100)
+      .get();
+    const requests = docsToJson(snap).sort(
+      (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0),
+    );
+    res.json({ requests });
+  }),
+);
+
+adminRouter.patch(
+  "/call-requests/:id",
+  asyncHandler(async (req, res) => {
+    const action = String(req.body?.action || "").trim();
+    if (!["done", "cancel"].includes(action)) {
+      throw new ApiError(422, "Choose done or cancel.", "ACTION_REQUIRED");
+    }
+    const ref = collections.callRequests.doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists) throw new ApiError(404, "Call request not found.", "NOT_FOUND");
+    if (snap.data().status !== "pending") {
+      return res.json({ ok: true, already: true });
+    }
+
+    await ref.set(
+      {
+        status: action === "done" ? "done" : "dismissed",
+        handledBy: req.user.uid,
+        handledAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+    await audit(req.user.uid, `callRequest.${action}`, { requestId: ref.id });
+    res.json({ ok: true });
+  }),
+);
+
+/* -------------------------------- REFERRALS ------------------------------- */
+
+adminRouter.get(
+  "/referrals",
+  asyncHandler(async (_req, res) => {
+    const snap = await collections.referrals
+      .orderBy("createdAt", "desc")
+      .limit(250)
+      .get();
+    const referrals = docsToJson(snap);
+    const stats = referrals.reduce(
+      (result, item) => {
+        result.total += 1;
+        if (item.status === "pending") result.pending += 1;
+        if (item.status === "service_completed") result.awaitingVerification += 1;
+        if (item.status === "approved") result.approved += 1;
+        if (item.status === "rejected") result.rejected += 1;
+        if (item.status === "approved") result.approvedRewards += Number(item.rewardAmount) || 0;
+        return result;
+      },
+      {
+        total: 0,
+        pending: 0,
+        awaitingVerification: 0,
+        approved: 0,
+        rejected: 0,
+        approvedRewards: 0,
+      },
+    );
+    res.json({ referrals, stats });
+  }),
+);
+
+adminRouter.patch(
+  "/referrals/:id",
+  asyncHandler(async (req, res) => {
+    const action = String(req.body?.action || "").trim();
+    const note = String(req.body?.note || "").slice(0, 500);
+    if (!["approve", "reject"].includes(action)) {
+      throw new ApiError(422, "Choose approve or reject.", "ACTION_REQUIRED");
+    }
+
+    const ref = collections.referrals.doc(req.params.id);
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new ApiError(404, "Referral not found.", "NOT_FOUND");
+      const referral = snap.data();
+      if (["approved", "rejected"].includes(referral.status)) {
+        return { referral, already: true };
+      }
+      if (action === "approve" && !referral.serviceCompleted) {
+        throw new ApiError(
+          409,
+          "This friend has not completed their first service yet.",
+          "REFERRAL_NOT_ELIGIBLE",
+        );
+      }
+
+      const update = {
+        status: action === "approve" ? "approved" : "rejected",
+        rewardStatus: action === "approve" ? "approved" : "rejected",
+        adminNote: note,
+        reviewedBy: req.user.uid,
+        reviewedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        ...(action === "approve"
+          ? { approvedAt: FieldValue.serverTimestamp() }
+          : { rejectedAt: FieldValue.serverTimestamp() }),
+      };
+      tx.update(ref, update);
+      return { referral: { ...referral, ...update }, already: false };
+    });
+
+    if (!result.already) {
+      const { referral } = result;
+      const reward = Number(referral.rewardAmount) || 51;
+      const title =
+        action === "approve"
+          ? "Referral approved 🎉"
+          : "Referral could not be approved";
+      const referrerBody =
+        action === "approve"
+          ? `₹${reward} for you and ₹${reward} for ${referral.referredName || "your friend"} are approved. Our team will process the reward — it is not auto-credited.`
+          : "A referral was reviewed and could not be approved. Open Refer & Earn for details.";
+      const referredBody =
+        action === "approve"
+          ? `Your ₹${reward} welcome reward is approved. Our team will process it separately — it is not auto-credited.`
+          : "Your welcome referral was reviewed and could not be approved. Contact support if you need help.";
+      await Promise.allSettled([
+        notify(referral.referrerId, {
+          title,
+          body: referrerBody,
+          type: "referral",
+          link: "/refer",
+        }),
+        notify(referral.referredId, {
+          title,
+          body: referredBody,
+          type: "referral",
+          link: "/refer",
+        }),
+      ]);
+      await audit(req.user.uid, `referral.${action}`, {
+        referralId: ref.id,
+        note,
+      });
+    }
+
+    res.json({ ok: true, already: result.already });
   }),
 );
 

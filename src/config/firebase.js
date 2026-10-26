@@ -78,6 +78,8 @@ export const collections = {
   commissions: db.collection("commissions"),
   payments: db.collection("payments"),
   chatThreads: db.collection("chatThreads"),
+  callRequests: db.collection("callRequests"),
+  referrals: db.collection("referrals"),
   admins: db.collection("admins"),
   settings: db.collection("settings"),
   audit: db.collection("audit"),

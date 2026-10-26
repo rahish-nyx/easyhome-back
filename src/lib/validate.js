@@ -65,6 +65,12 @@ export const sessionSchema = z.object({
   pricePerWork: z.coerce.number().int().min(0).max(100000).optional(),
   lat: coord.nullable().optional(),
   lng: coord.nullable().optional(),
+  referralCode: z
+    .string()
+    .trim()
+    .max(12)
+    .regex(/^[a-zA-Z0-9]*$/, "Invalid referral code")
+    .optional(),
 });
 
 export const profileSchema = z.object({
