@@ -36,3 +36,6 @@ serviceAccount.json
 uploads/*
 !uploads/.gitkeep
 dist
+
+# Vercel
+.vercel
