@@ -440,18 +440,25 @@ adminRouter.patch(
     const finalPrice = Math.round(
       Number(booking.pricing?.finalPrice) || Number(booking.budget) || 0,
     );
+    const urgentFee = Math.max(0, Math.round(Number(booking.urgentFee) || 0));
+    const paymentTotal = finalPrice + urgentFee;
     const premium = premiumActive(worker);
-    const { commission, workerReceives } = commissionFor(
+    const { commission, workerReceives: serviceEarnings } = commissionFor(
       finalPrice,
       settings.commissionPct,
       { premium },
     );
+    // The urgent-job fee belongs to the worker; commission applies only to
+    // the agreed service price (and is zero for Pro workers).
+    const workerReceives = serviceEarnings + urgentFee;
 
     const batch = db.batch();
     batch.update(ref, {
       paidAt: FieldValue.serverTimestamp(),
       paymentMode: mode,
       "pricing.finalPrice": finalPrice,
+      "pricing.urgentFee": urgentFee,
+      "pricing.paymentTotal": paymentTotal,
       "pricing.commission": commission,
       "pricing.workerReceives": workerReceives,
       updatedAt: FieldValue.serverTimestamp(),
@@ -485,7 +492,7 @@ adminRouter.patch(
 
     await batch.commit();
     await audit(req.user.uid, "booking.markPaid", { bookingId: ref.id, mode });
-    res.json({ ok: true, commission, workerReceives });
+    res.json({ ok: true, commission, workerReceives, urgentFee, paymentTotal });
   }),
 );
 
