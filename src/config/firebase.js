@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import {
   applicationDefault,
   cert,
@@ -8,12 +9,14 @@ import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 import { env } from "./env.js";
 
+function serviceAccountFileExists() {
+  const file = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  return Boolean(file && existsSync(file));
+}
+
 function buildCredential() {
   if (env.serviceAccountJson) {
     return cert(JSON.parse(env.serviceAccountJson));
-  }
-  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    return applicationDefault();
   }
   if (env.clientEmail && env.privateKey) {
     return cert({
@@ -21,6 +24,9 @@ function buildCredential() {
       clientEmail: env.clientEmail,
       privateKey: env.privateKey,
     });
+  }
+  if (serviceAccountFileExists()) {
+    return applicationDefault();
   }
   return null;
 }

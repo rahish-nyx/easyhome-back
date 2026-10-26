@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { existsSync } from "node:fs";
 
 const asBool = (value, fallback = false) => {
   if (value === undefined || value === "") return fallback;
@@ -41,7 +42,16 @@ const emulator = Boolean(
 );
 
 const missing = [];
-const hasServiceAccountFile = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+const credentialsFile = process.env.GOOGLE_APPLICATION_CREDENTIALS || "";
+// On Vercel the file cannot be uploaded (it is gitignored and not part of the
+// build), so a path that does not resolve must not count as credentials.
+const hasServiceAccountFile = Boolean(credentialsFile && existsSync(credentialsFile));
+if (credentialsFile && !hasServiceAccountFile) {
+  console.warn(
+    `GOOGLE_APPLICATION_CREDENTIALS points to "${credentialsFile}", which does not exist. ` +
+      "Ignoring it; set FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY instead.",
+  );
+}
 if (!emulator) {
   for (const key of [
     "FIREBASE_PROJECT_ID",
