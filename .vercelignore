@@ -1,0 +1,12 @@
+.git
+.gitignore
+node_modules
+.env
+.env.*
+!.env.example
+serviceAccount.json
+*firebase-adminsdk*.json
+*-firebase-adminsdk-*.json
+uploads
+test
+.vscode
