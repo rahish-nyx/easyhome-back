@@ -70,8 +70,9 @@ export async function applyReferralForNewUser({
   if (!CODE_PATTERN.test(referralCode)) {
     return { applied: false, reason: "invalid_code" };
   }
-  if (role && role !== "customer") {
-    return { applied: false, reason: "customers_only" };
+  const referredRole = role === "worker" ? "worker" : "customer";
+  if (role && !["customer", "worker"].includes(role)) {
+    return { applied: false, reason: "invalid_role" };
   }
 
   const referrerSnap = await collections.users
@@ -88,8 +89,9 @@ export async function applyReferralForNewUser({
   }
 
   const referrer = referrerDoc.data();
-  if (referrer.role && referrer.role !== "customer") {
-    return { applied: false, reason: "customers_only" };
+  const referrerRole = referrer.role === "worker" ? "worker" : "customer";
+  if (referrerRole !== referredRole) {
+    return { applied: false, reason: "same_role_only" };
   }
   if (referrer.disabled === true) {
     return { applied: false, reason: "referrer_inactive" };
@@ -105,13 +107,18 @@ export async function applyReferralForNewUser({
     return { applied: false, reason: "already_referred" };
   }
 
+  const isWorker = referredRole === "worker";
+  const fallbackName = isWorker ? "EasyHome professional" : "EasyHome customer";
+
   await referralRef.set({
     referrerId: referrerDoc.id,
-    referrerName: referrer.name || "EasyHome customer",
+    referrerName: referrer.name || fallbackName,
     referrerEmail: referrer.email || "",
+    referrerRole,
     referredId: uid,
-    referredName: name || "EasyHome customer",
+    referredName: name || fallbackName,
     referredEmail: email || "",
+    referredRole,
     status: "pending",
     serviceCompleted: false,
     firstBookingId: null,
@@ -132,14 +139,20 @@ export async function applyReferralForNewUser({
 
   await Promise.allSettled([
     notify(referrerDoc.id, {
-      title: "Your friend joined EasyHome",
-      body: `${name || "Your friend"} signed up with your code. You both unlock ₹${REFERRAL_REWARD} after their first completed service and admin verification.`,
+      title: isWorker
+        ? "A fellow professional joined EasyHome"
+        : "Your friend joined EasyHome",
+      body: isWorker
+        ? `${name || "A professional"} signed up with your code. You both unlock ₹${REFERRAL_REWARD} after their first completed job and admin verification.`
+        : `${name || "Your friend"} signed up with your code. You both unlock ₹${REFERRAL_REWARD} after their first completed service and admin verification.`,
       type: "referral",
-      link: "/refer",
+      link: isWorker ? "/worker?tab=refer" : "/refer",
     }),
     notifyAdmins({
-      title: "New referral sign-up",
-      body: `${name || "A customer"} joined with ${referrer.name || "a customer"}'s code. Reward is pending their first completed service.`,
+      title: isWorker ? "New professional referral" : "New referral sign-up",
+      body: isWorker
+        ? `${name || "A professional"} joined with ${referrer.name || "a professional"}'s code. Reward is pending their first completed job.`
+        : `${name || "A customer"} joined with ${referrer.name || "a customer"}'s code. Reward is pending their first completed service.`,
       type: "referral",
       link: "/admin/referrals",
     }),
@@ -171,16 +184,17 @@ export async function markReferralServiceCompleted(uid, bookingId) {
     { merge: true },
   );
 
+  const isWorker = referral.referredRole === "worker";
   await Promise.allSettled([
     notify(referral.referrerId, {
       title: "Referral ready for verification",
-      body: `${referral.referredName || "Your friend"} completed their first service. EasyHome will verify the referral before approving ₹${referral.rewardAmount || REFERRAL_REWARD}.`,
+      body: `${referral.referredName || "Your friend"} completed their first ${isWorker ? "job" : "service"}. EasyHome will verify the referral before approving ₹${referral.rewardAmount || REFERRAL_REWARD}.`,
       type: "referral",
-      link: "/refer",
+      link: isWorker ? "/worker?tab=refer" : "/refer",
     }),
     notifyAdmins({
       title: "Referral ready to verify",
-      body: `${referral.referredName || "A new customer"} completed their first service. Review the referral before approving rewards.`,
+      body: `${referral.referredName || "A new customer"} completed their first ${isWorker ? "job" : "service"}. Review the referral before approving rewards.`,
       type: "referral",
       link: "/admin/referrals",
     }),

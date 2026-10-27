@@ -5,7 +5,12 @@ import { collections, db } from "../config/firebase.js";
 import { env } from "../config/env.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { requireApprovedWorker, requireAuth } from "../middleware/auth.js";
-import { appSettings, workerDues } from "../lib/booking.js";
+import {
+  appSettings,
+  planMonths,
+  subscriptionAmount,
+  workerDues,
+} from "../lib/booking.js";
 import { syncPublicWorker } from "../lib/workers.js";
 import { emailLayout, notify, sendMail } from "../lib/notify.js";
 import {
@@ -32,18 +37,6 @@ const verifySchema = z.object({
   commissionId: z.string().optional(),
 });
 const commissionOrderSchema = z.object({ commissionId: z.string().min(4) });
-
-function planAmount(plan, monthly) {
-  if (plan === "quarterly") return Math.round(monthly * 3 * 0.9);
-  if (plan === "yearly") return Math.round(monthly * 12 * 0.8);
-  return monthly;
-}
-
-function planMonths(plan) {
-  if (plan === "quarterly") return 3;
-  if (plan === "yearly") return 12;
-  return 1;
-}
 
 function assertOnlinePayments() {
   if (!razorpayConfigured()) {
@@ -93,7 +86,7 @@ async function findCommission({ commissionId, orderId }) {
     .limit(1)
     .get();
   if (!snap.empty) return snap.docs[0];
-  throw new ApiError(404, "Commission payment not found.", "COMMISSION_NOT_FOUND");
+  throw new ApiError(404, "Fees payment not found.", "COMMISSION_NOT_FOUND");
 }
 
 async function fulfillSubscription({ orderId, paymentId, subscriptionId, userId }) {
@@ -235,13 +228,13 @@ async function fulfillCommission({ orderId, paymentId, commissionId, workerId })
   const snap = await findCommission({ commissionId, orderId });
   const result = await db.runTransaction(async (tx) => {
     const fresh = await tx.get(snap.ref);
-    if (!fresh.exists) throw new ApiError(404, "Commission not found.", "NOT_FOUND");
+    if (!fresh.exists) throw new ApiError(404, "Fees not found.", "NOT_FOUND");
     const commission = fresh.data();
     if (workerId && commission.workerId !== workerId) {
-      throw new ApiError(403, "This commission belongs to another worker.", "FORBIDDEN");
+      throw new ApiError(403, "This fee belongs to another worker.", "FORBIDDEN");
     }
     if (commission.razorpayOrderId && commission.razorpayOrderId !== orderId) {
-      throw new ApiError(400, "Payment order does not match this commission.", "ORDER_MISMATCH");
+      throw new ApiError(400, "Payment order does not match this fee.", "ORDER_MISMATCH");
     }
 
     if (commission.status === "approved") {
@@ -302,7 +295,7 @@ async function fulfillCommission({ orderId, paymentId, commissionId, workerId })
   const commission = result.commission;
 
   await notify(commission.workerId, {
-    title: "Commission cleared ✅",
+    title: "Fees cleared ✅",
     body: "Your payment was verified automatically. You can accept new jobs now.",
     type: "commission",
     link: "/worker?tab=earnings",
@@ -343,7 +336,8 @@ paymentRouter.post(
       throw new ApiError(409, "Your membership is already active.", "ALREADY_SUBSCRIBED");
     }
 
-    const amount = planAmount(plan, Number(settings.subscriptionPrice) || 199);
+    const role = user.role === "worker" ? "worker" : "customer";
+    const amount = subscriptionAmount(settings, role, plan);
     const months = planMonths(plan);
     const subRef = collections.subscriptions.doc();
     const order = await createRazorpayOrder({
@@ -429,18 +423,18 @@ paymentRouter.post(
     const uid = req.user.uid;
     const ref = collections.commissions.doc(commissionId);
     const snap = await ref.get();
-    if (!snap.exists) throw new ApiError(404, "Commission not found.", "COMMISSION_NOT_FOUND");
+    if (!snap.exists) throw new ApiError(404, "Fees not found.", "COMMISSION_NOT_FOUND");
     const commission = snap.data();
     if (commission.workerId !== uid) {
-      throw new ApiError(403, "This commission belongs to another worker.", "FORBIDDEN");
+      throw new ApiError(403, "This fee belongs to another worker.", "FORBIDDEN");
     }
     if (commission.status === "approved") {
-      throw new ApiError(409, "This commission is already cleared.", "ALREADY_APPROVED");
+      throw new ApiError(409, "This fee is already cleared.", "ALREADY_APPROVED");
     }
     if (commission.status === "paid") {
       throw new ApiError(
         409,
-        "This commission is already awaiting verification.",
+        "This fee is already awaiting verification.",
         "PAYMENT_PENDING",
       );
     }
@@ -475,7 +469,7 @@ paymentRouter.post(
       currency: order.currency || "INR",
       commissionId,
       name: "EasyHome",
-      description: `Worker commission · ${commission.service || "Job"}`,
+      description: `Worker fees · ${commission.service || "Job"}`,
       prefill: {
         name: worker.name || req.user.name || "",
         email: worker.email || req.user.email || "",

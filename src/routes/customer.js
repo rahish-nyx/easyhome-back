@@ -18,7 +18,10 @@ import {
   canAcceptJobs,
   commissionFor,
   customerPremiumActive,
+  feesPctFor,
+  planMonths,
   premiumActive,
+  subscriptionAmount,
 } from "../lib/booking.js";
 import { nearestServiceArea } from "../lib/geo.js";
 import { uploadCloudinaryImage } from "../lib/media.js";
@@ -50,18 +53,6 @@ async function resolveService(serviceName, serviceKey) {
         service.name.toLowerCase() === String(serviceName || "").toLowerCase(),
     ) || null
   );
-}
-
-function planAmount(plan, monthly) {
-  if (plan === "quarterly") return Math.round(monthly * 3 * 0.9);
-  if (plan === "yearly") return Math.round(monthly * 12 * 0.8);
-  return monthly;
-}
-
-function planMonths(plan) {
-  if (plan === "quarterly") return 3;
-  if (plan === "yearly") return 12;
-  return 1;
 }
 
 customerRouter.post(
@@ -155,14 +146,24 @@ customerRouter.post(
       },
     };
     const warnings = [];
-    const customerSnap = await collections.users.doc(uid).get();
+    const [customerSnap, settings] = await Promise.all([
+      collections.users.doc(uid).get(),
+      appSettings(),
+    ]);
     const customer = customerSnap.exists ? customerSnap.data() : {};
     const customerPremium = customerPremiumActive(customer);
-    const freeCancellationMinutes = customerPremium ? 20 : 7;
+    const customerRules = settings.customerRules || {};
+    const freeCancellationMinutes = customerPremium
+      ? Number(customerRules.proCancellationMinutes) || 20
+      : Number(customerRules.cancellationMinutes) || 7;
+    const urgentFeePct = Math.max(
+      0,
+      Number(customerRules.urgentFeePct) || 0,
+    );
     const baseBudget = Math.round(body.budget);
     const urgentFee =
       body.urgency === "urgent" && !customerPremium
-        ? Math.round(baseBudget * 0.1)
+        ? Math.round((baseBudget * urgentFeePct) / 100)
         : 0;
     const estimatedTotal = baseBudget + urgentFee;
 
@@ -496,9 +497,13 @@ customerRouter.patch(
         ? await tx.get(collections.workers.doc(booking.workerId))
         : null;
       const worker = workerSnap?.exists ? workerSnap.data() : null;
-      const { commission, workerReceives } = commissionFor(price, settings.commissionPct, {
-        premium: premiumActive(worker),
-      });
+      const { commission, workerReceives } = commissionFor(
+        price,
+        feesPctFor(settings),
+        {
+          premium: premiumActive(worker),
+        },
+      );
 
       tx.update(ref, {
         "pricing.finalPrice": price,
@@ -535,6 +540,8 @@ customerRouter.patch(
   asyncHandler(async (req, res) => {
     const { reason } = cancelSchema.parse(req.body || {});
     const ref = collections.bookings.doc(req.params.id);
+    const settings = await appSettings();
+    const rules = settings.customerRules || {};
 
     const result = await db.runTransaction(async (tx) => {
       const [snap, customerSnap] = await Promise.all([
@@ -559,7 +566,9 @@ customerRouter.patch(
 
       const customer = customerSnap.exists ? customerSnap.data() : {};
       const premium = customerPremiumActive(customer);
-      const windowMinutes = premium ? 20 : 7;
+      const windowMinutes = premium
+        ? Number(rules.proCancellationMinutes) || 20
+        : Number(rules.cancellationMinutes) || 7;
       const createdAt = toDate(data.createdAt);
       const fallbackDeadline = toDate(data.freeCancellationUntil);
       const deadline = createdAt
@@ -570,9 +579,7 @@ customerRouter.patch(
       if (deadline && Date.now() > deadline) {
         throw new ApiError(
           409,
-          premium
-            ? "Your 20-minute free cancellation window has closed. Contact support and we will help."
-            : "The 7-minute free cancellation window has closed. Contact support and we will help.",
+          `Your ${windowMinutes}-minute free cancellation window has closed. Contact support and we will help.`,
           "CANCELLATION_WINDOW_CLOSED",
           { windowMinutes, deadline: new Date(deadline).toISOString() },
         );
@@ -653,12 +660,12 @@ customerRouter.patch(
       const premium = premiumActive(worker);
       const { commission, workerReceives: serviceEarnings } = commissionFor(
         finalPrice,
-        settings.commissionPct,
+        feesPctFor(settings),
         { premium },
       );
       // Urgent jobs may carry a platform-set priority fee. It is paid directly
-      // to the professional with the service amount; commission still applies
-      // only to the agreed service price.
+      // to the professional with the service amount; fees still apply only to
+      // the agreed service price.
       const workerReceives = serviceEarnings + urgentFee;
 
       tx.update(ref, {
@@ -702,8 +709,8 @@ customerRouter.patch(
       title: "Payment received",
       body:
         result.commission > 0
-          ? `₹${result.workerReceives} is yours. ₹${result.commission} commission is now due.`
-          : `₹${result.workerReceives} is yours. Premium — no commission.`,
+          ? `₹${result.workerReceives} is yours. ₹${result.commission} in fees is now due.`
+          : `₹${result.workerReceives} is yours. Premium — no fees.`,
       type: "payment",
       link: "/worker?tab=earnings",
     });
@@ -835,7 +842,7 @@ customerRouter.post(
       throw new ApiError(409, "You already have a payment request under review.", "REQUEST_PENDING");
     }
 
-    const amount = planAmount(plan, settings.subscriptionPrice);
+    const amount = subscriptionAmount(settings, user.role, plan);
     const ref = collections.subscriptions.doc();
     await ref.set({
       userId: uid,

@@ -116,7 +116,7 @@ instance rather than globally shared.
 - `workersPublic` contains only safe directory fields (no phone, email, UPI or KYC).
 - KYC files are stored as private Cloudinary assets and exposed by a short-lived URL issued through an admin-authenticated route.
 - Job-feed entries and in-app job notifications are created only for approved, online workers matching the booking's service, exact city/state/locality and active-zone radius; Pro workers are notified first.
-- Worker job acceptance rechecks the active zone and worker radius in a Firestore transaction, in addition to price negotiation, completion and commission settlement.
+- Worker job acceptance rechecks the active zone and worker radius in a Firestore transaction, in addition to price negotiation, completion and fee settlement.
 - A booking with `preferredWorkerId` is reserved for that worker in the API, not just hidden in the UI.
 - Rate limits apply globally, and more tightly to auth endpoints.
 
@@ -133,12 +133,12 @@ instance rather than globally shared.
 | `jobFeed/{feedId}` | Open-job feed entries scoped to individual eligible workers |
 | `urgentPublic/{bookingId}` | Sanitised urgent jobs for the storefront |
 | `subscriptions/{id}` | Razorpay membership orders and activated plans |
-| `commissions/{id}` | Worker commission dues and Razorpay settlements |
+| `commissions/{id}` | Worker fee dues and Razorpay settlements (legacy collection name) |
 | `payments/{paymentId}` | Verified Razorpay payment audit records |
 | `reviews/{id}` | Ratings and customer feedback |
 | `chats/{uid}/messages/{id}` | Customer/admin support thread |
 | `notifications/{id}` | In-app notifications |
-| `settings/app` | Commission, pricing, maintenance and announcements |
+| `settings/app` | Fees, pricing, maintenance and announcements |
 | `admins/{uid}` | Admin membership document |
 
 ## API surface
@@ -222,7 +222,7 @@ All routes are prefixed by `/api`.
 ## Email and payments
 
 - In-app notifications always work. Email is sent only when `RESEND_API_KEY` is set.
-- Memberships and worker commission clearances use Razorpay Checkout. The API creates the order, verifies the payment signature server-side, and fulfils the benefit immediately.
+- Memberships and worker fee clearances use Razorpay Checkout. The API creates the order, verifies the payment signature server-side, and fulfils the benefit immediately.
 - Razorpay Dashboard webhook URL: `https://<your-api-domain>/api/payment/webhook`. Subscribe to `payment.captured` and `order.paid`; set the signing secret as `RAZORPAY_WEBHOOK_SECRET`.
 - Fulfilment is idempotent, so the browser verify call and the webhook can safely race. Telegram alerts are best-effort and never block fulfilment.
 - Legacy manual UTR routes return `410 MANUAL_PAYMENT_DISABLED`. Historical admin approval screens remain for old records.

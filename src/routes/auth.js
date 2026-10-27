@@ -127,7 +127,7 @@ authRouter.post(
     await userRef.set(userDoc);
 
     let referral = null;
-    if (role === "customer" && body.referralCode) {
+    if (body.referralCode) {
       referral = await applyReferralForNewUser({
         code: body.referralCode,
         uid,

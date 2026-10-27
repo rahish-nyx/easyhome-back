@@ -7,6 +7,7 @@
 import { FieldValue } from "firebase-admin/firestore";
 import { auth, collections } from "../src/config/firebase.js";
 import { env } from "../src/config/env.js";
+import { SERVICE_SUBHEADINGS } from "./serviceSubheadings.js";
 
 const services = [
   {
@@ -190,7 +191,7 @@ const promos = [
   {
     id: "easyhome-pro",
     title: "EasyHome Pro",
-    subtitle: "Zero commission, priority jobs and a verified Pro badge for ₹199/month.",
+    subtitle: "Zero fees, priority jobs and a verified Pro badge for ₹199/month.",
     ctaText: "Go Pro",
     ctaLink: "/subscription",
     theme: "dark",
@@ -300,6 +301,10 @@ async function main() {
     await collections.services.doc(service.key).set(
       {
         ...service,
+        subheading:
+          service.subheading ||
+          SERVICE_SUBHEADINGS[service.key] ||
+          `${service.name} by verified pros`,
         active: true,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
@@ -372,9 +377,26 @@ async function main() {
   const settingsRef = collections.settings.doc("app");
   const settingsSnap = await settingsRef.get();
   const existingSettings = settingsSnap.exists ? settingsSnap.data() : {};
+  const customerMonthly = Number(env.subscriptionPrice) || 199;
   const defaultSettings = {
     commissionPct: env.commissionPct,
-    subscriptionPrice: env.subscriptionPrice,
+    subscriptionPrice: customerMonthly,
+    customerPlans: {
+      monthly: customerMonthly,
+      quarterly: Math.round(customerMonthly * 3 * 0.9),
+      yearly: Math.round(customerMonthly * 12 * 0.8),
+    },
+    workerPlans: { monthly: 250, quarterly: 675, yearly: 2400 },
+    customerRules: {
+      urgentFeePct: 10,
+      cancellationMinutes: 7,
+      proCancellationMinutes: 20,
+    },
+    workerRules: {
+      feesPct: env.commissionPct,
+      urgentFeePct: 10,
+      cancellationMinutes: 7,
+    },
     customerBenefits: [
       "Active priority worker matching",
       "No 10% urgent-job extra charge",
@@ -383,7 +405,7 @@ async function main() {
       "Verified Pro badge",
     ],
     workerBenefits: [
-      "0% commission on every job",
+      "0% fees on every job",
       "Top placement in search",
       "Free urgent-job priority",
       "Verified Pro badge",

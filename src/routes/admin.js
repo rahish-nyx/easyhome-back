@@ -10,6 +10,7 @@ import { approveWorker, syncPublicWorker } from "../lib/workers.js";
 import {
   appSettings,
   commissionFor,
+  feesPctFor,
   premiumActive,
 } from "../lib/booking.js";
 import {
@@ -445,11 +446,11 @@ adminRouter.patch(
     const premium = premiumActive(worker);
     const { commission, workerReceives: serviceEarnings } = commissionFor(
       finalPrice,
-      settings.commissionPct,
+      feesPctFor(settings),
       { premium },
     );
-    // The urgent-job fee belongs to the worker; commission applies only to
-    // the agreed service price (and is zero for Pro workers).
+    // The urgent-job fee belongs to the worker; fees apply only to the agreed
+    // service price (and are zero for Pro workers).
     const workerReceives = serviceEarnings + urgentFee;
 
     const batch = db.batch();
@@ -721,7 +722,9 @@ adminRouter.patch(
       if (action === "approve" && !referral.serviceCompleted) {
         throw new ApiError(
           409,
-          "This friend has not completed their first service yet.",
+          referral.referredRole === "worker"
+            ? "This professional has not completed their first job yet."
+            : "This friend has not completed their first service yet.",
           "REFERRAL_NOT_ELIGIBLE",
         );
       }
@@ -744,10 +747,16 @@ adminRouter.patch(
     if (!result.already) {
       const { referral } = result;
       const reward = Number(referral.rewardAmount) || 51;
+      const isWorker = referral.referredRole === "worker";
+      const referralLink = isWorker ? "/worker?tab=refer" : "/refer";
       const title =
         action === "approve"
-          ? "Referral approved 🎉"
-          : "Referral could not be approved";
+          ? isWorker
+            ? "Professional referral approved 🎉"
+            : "Referral approved 🎉"
+          : isWorker
+            ? "Professional referral could not be approved"
+            : "Referral could not be approved";
       const referrerBody =
         action === "approve"
           ? `₹${reward} for you and ₹${reward} for ${referral.referredName || "your friend"} are approved. Our team will process the reward — it is not auto-credited.`
@@ -761,13 +770,13 @@ adminRouter.patch(
           title,
           body: referrerBody,
           type: "referral",
-          link: "/refer",
+          link: referralLink,
         }),
         notify(referral.referredId, {
           title,
           body: referredBody,
           type: "referral",
-          link: "/refer",
+          link: referralLink,
         }),
       ]);
       await audit(req.user.uid, `referral.${action}`, {

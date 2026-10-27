@@ -16,6 +16,7 @@ import {
   appSettings,
   canAcceptJobs,
   commissionFor,
+  feesPctFor,
   premiumActive,
 } from "../lib/booking.js";
 import {
@@ -211,7 +212,7 @@ workerRouter.post(
       if (!gate.allowed) {
         const messages = {
           offline: "Go online to accept new jobs.",
-          dues: `Pay ₹${gate.dues} in commission before accepting new jobs.`,
+          dues: `Pay ₹${gate.dues} in fees before accepting new jobs.`,
           not_approved: "Your worker account is not approved yet.",
           no_worker_profile: "Complete your worker profile first.",
         };
@@ -327,9 +328,13 @@ workerRouter.patch(
 
       const workerSnap = await tx.get(collections.workers.doc(uid));
       const worker = workerSnap.data();
-      const { commission, workerReceives } = commissionFor(price, settings.commissionPct, {
-        premium: premiumActive(worker),
-      });
+      const { commission, workerReceives } = commissionFor(
+        price,
+        feesPctFor(settings),
+        {
+          premium: premiumActive(worker),
+        },
+      );
 
       tx.update(bookingRef, {
         "pricing.workerPrice": Math.round(price),
@@ -565,6 +570,14 @@ workerRouter.patch(
       ).catch((error) => {
         console.warn("Referral completion update failed:", error.message);
       });
+      if (result.booking.workerId) {
+        await markReferralServiceCompleted(
+          result.booking.workerId,
+          req.params.id,
+        ).catch((error) => {
+          console.warn("Worker referral completion update failed:", error.message);
+        });
+      }
     }
 
     if (!result.unchanged) {
@@ -729,6 +742,14 @@ workerRouter.patch(
     ).catch((error) => {
       console.warn("Referral completion update failed:", error.message);
     });
+    if (result.booking.workerId) {
+      await markReferralServiceCompleted(
+        result.booking.workerId,
+        bookingRef.id,
+      ).catch((error) => {
+        console.warn("Worker referral completion update failed:", error.message);
+      });
+    }
 
     res.json({ ok: true, phase: TRACKING_PHASES.COMPLETED });
   }),
@@ -765,13 +786,13 @@ workerRouter.post(
       .get();
 
     if (snap.empty) {
-      throw new ApiError(404, "No commission is due for this job.", "COMMISSION_NOT_FOUND");
+      throw new ApiError(404, "No fees are due for this job.", "COMMISSION_NOT_FOUND");
     }
 
     const commissionDoc = snap.docs[0];
     const commission = commissionDoc.data();
     if (commission.status === "approved") {
-      throw new ApiError(409, "This commission is already approved.", "ALREADY_APPROVED");
+      throw new ApiError(409, "This fee is already approved.", "ALREADY_APPROVED");
     }
     if (commission.status === "paid") {
       throw new ApiError(
@@ -791,7 +812,7 @@ workerRouter.post(
     });
 
     await notifyAdmins({
-      title: "Commission payment submitted",
+      title: "Fees payment submitted",
       body: `${req.user.name || "A worker"} submitted ₹${commission.amount} for ${commission.service}. UTR: ${reference}`,
       type: "commission",
       link: "/admin/revenue",

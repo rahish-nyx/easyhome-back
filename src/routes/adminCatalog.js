@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
-import { collections } from "../config/firebase.js";
+import { collections, db } from "../config/firebase.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { upload } from "../middleware/upload.js";
@@ -10,6 +10,7 @@ import {
   citySchema,
   footerLinkSchema,
   promoSchema,
+  servicePricingBulkSchema,
   serviceSchema,
   settingsSchema,
 } from "../lib/validate.js";
@@ -59,6 +60,36 @@ adminCatalogRouter.post(
       updatedAt: FieldValue.serverTimestamp(),
     });
     res.status(201).json({ service: docToJson(await ref.get()) });
+  }),
+);
+
+adminCatalogRouter.patch(
+  "/services/pricing",
+  asyncHandler(async (req, res) => {
+    const { updates } = servicePricingBulkSchema.parse(req.body || {});
+    const snap = await collections.services.get();
+    const existing = new Set(snap.docs.map((doc) => doc.id));
+    const missing = updates.filter((item) => !existing.has(item.id));
+    if (missing.length) {
+      throw new ApiError(
+        404,
+        "One or more services no longer exist. Refresh and try again.",
+        "SERVICE_NOT_FOUND",
+      );
+    }
+    const batch = db.batch();
+    updates.forEach((item) => {
+      batch.set(
+        collections.services.doc(item.id),
+        {
+          fromPrice: item.fromPrice,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    });
+    await batch.commit();
+    res.json({ ok: true, updated: updates.length });
   }),
 );
 
@@ -281,6 +312,13 @@ adminCatalogRouter.patch(
   asyncHandler(async (req, res) => {
     const body = settingsSchema.parse(req.body || {});
     const updates = { ...body, updatedAt: FieldValue.serverTimestamp() };
+    // Keep the legacy scalar fields in sync for older clients and reports.
+    if (body.customerPlans?.monthly !== undefined) {
+      updates.subscriptionPrice = body.customerPlans.monthly;
+    }
+    if (body.workerRules?.feesPct !== undefined) {
+      updates.commissionPct = body.workerRules.feesPct;
+    }
     if (req.file) {
       updates.qrImagePath = (
         await uploadCloudinaryImage(req.file.buffer, { folder: "settings" })

@@ -190,7 +190,7 @@ adminMoneyRouter.patch(
     const ref = collections.commissions.doc(req.params.id);
     const result = await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
-      if (!snap.exists) throw new ApiError(404, "Commission not found.", "NOT_FOUND");
+      if (!snap.exists) throw new ApiError(404, "Fees not found.", "NOT_FOUND");
       const commission = snap.data();
       if (commission.status === "approved") {
         throw new ApiError(409, "Already approved.", "ALREADY_APPROVED");
@@ -220,7 +220,7 @@ adminMoneyRouter.patch(
     });
 
     await notify(result.commission.workerId, {
-      title: "Commission approved ✅",
+      title: "Fees approved ✅",
       body: "Your payment was verified. You can accept new jobs now.",
       type: "commission",
       link: "/worker",
@@ -235,7 +235,7 @@ adminMoneyRouter.patch(
   asyncHandler(async (req, res) => {
     const ref = collections.commissions.doc(req.params.id);
     const snap = await ref.get();
-    if (!snap.exists) throw new ApiError(404, "Commission not found.", "NOT_FOUND");
+    if (!snap.exists) throw new ApiError(404, "Fees not found.", "NOT_FOUND");
     const commission = snap.data();
 
     await ref.update({
@@ -247,7 +247,7 @@ adminMoneyRouter.patch(
     });
 
     await notify(commission.workerId, {
-      title: "Commission payment rejected",
+      title: "Fees payment rejected",
       body: "Please re-check the UPI reference and submit again.",
       type: "commission",
       link: "/worker?tab=earnings",

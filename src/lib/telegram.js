@@ -115,7 +115,7 @@ export function commissionTelegramMessage({
   utrId,
 }) {
   return [
-    "🔔 NEW COMMISSION PAYMENT",
+    "🔔 NEW FEE PAYMENT",
     `👷 Worker: ${workerName || workerId || "Unknown"}`,
     `💰 Amount: ₹${Number(amount) || 0}`,
     `💳 UTR ID: ${utrId || "—"}`,
@@ -156,7 +156,7 @@ export function commissionPaidTelegramMessage({
   orderId,
 }) {
   return [
-    "✅ WORKER COMMISSION CLEARED",
+    "✅ WORKER FEES CLEARED",
     `👷 Worker: ${workerName || workerId || "Unknown"}`,
     `💰 Amount: ₹${Number(amount) || 0}`,
     `🆔 Payment ID: ${paymentId || "—"}`,

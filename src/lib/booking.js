@@ -25,6 +25,83 @@ export const WORKER_STATUS = Object.freeze({
   SUSPENDED: "suspended",
 });
 
+export const PLAN_MONTHS = Object.freeze({
+  monthly: 1,
+  quarterly: 3,
+  yearly: 12,
+});
+
+export const DEFAULT_CUSTOMER_PLANS = Object.freeze({
+  monthly: 199,
+  quarterly: 537,
+  yearly: 1910,
+});
+
+// Professional membership starts at ₹250/month. Quarterly and yearly prices
+// are derived with the same 10% / 20% multi-month discount used for customers.
+export const DEFAULT_WORKER_PLANS = Object.freeze({
+  monthly: 250,
+  quarterly: 675,
+  yearly: 2400,
+});
+
+export const DEFAULT_CUSTOMER_RULES = Object.freeze({
+  urgentFeePct: 10,
+  cancellationMinutes: 7,
+  proCancellationMinutes: 20,
+});
+
+export const DEFAULT_WORKER_RULES = Object.freeze({
+  feesPct: 10,
+  urgentFeePct: 10,
+  cancellationMinutes: 7,
+});
+
+function planPrice(value, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return fallback;
+  return Math.round(number);
+}
+
+export function normalisePlanGroup(group, fallbackMonthly) {
+  const monthly = planPrice(
+    group?.monthly,
+    planPrice(fallbackMonthly, DEFAULT_CUSTOMER_PLANS.monthly),
+  );
+  return {
+    monthly,
+    quarterly: planPrice(group?.quarterly, Math.round(monthly * 3 * 0.9)),
+    yearly: planPrice(group?.yearly, Math.round(monthly * 12 * 0.8)),
+  };
+}
+
+export function planMonths(plan) {
+  return PLAN_MONTHS[plan] || 1;
+}
+
+/** Authoritative membership amount for a role and billing plan. */
+export function subscriptionAmount(settings, role, plan) {
+  const group =
+    role === "worker"
+      ? normalisePlanGroup(
+          settings?.workerPlans,
+          DEFAULT_WORKER_PLANS.monthly,
+        )
+      : normalisePlanGroup(
+          settings?.customerPlans,
+          Number(settings?.subscriptionPrice) || DEFAULT_CUSTOMER_PLANS.monthly,
+        );
+  return group[plan] ?? group.monthly;
+}
+
+/** Professional service fees. Falls back to the legacy commissionPct field. */
+export function feesPctFor(settings) {
+  const value = Number(
+    settings?.workerRules?.feesPct ?? settings?.commissionPct,
+  );
+  return Number.isFinite(value) ? value : 0;
+}
+
 let cachedSettings = null;
 let cachedAt = 0;
 
@@ -37,7 +114,7 @@ export const DEFAULT_CUSTOMER_BENEFITS = Object.freeze([
 ]);
 
 export const DEFAULT_WORKER_BENEFITS = Object.freeze([
-  "0% commission on every job",
+  "0% fees on every job",
   "Top placement in search",
   "Free urgent-job priority",
   "Verified Pro badge",
@@ -89,10 +166,45 @@ export function normaliseCustomerBenefits(benefits) {
   return [...new Set(result)];
 }
 
+const LEGACY_WORKER_BENEFIT_COPY = {
+  "0% commission on every job": "0% fees on every job",
+  "Zero commission on every job": "0% fees on every job",
+  "No commission on every job": "0% fees on every job",
+};
+
+export function normaliseWorkerBenefits(benefits) {
+  if (!Array.isArray(benefits) || benefits.length === 0) {
+    return [...DEFAULT_WORKER_BENEFITS];
+  }
+  if (benefits.some((benefit) => LEGACY_CUSTOMER_BENEFITS.has(benefit))) {
+    return [...DEFAULT_WORKER_BENEFITS];
+  }
+  return [
+    ...new Set(
+      benefits.map(
+        (benefit) => LEGACY_WORKER_BENEFIT_COPY[benefit] || benefit,
+      ),
+    ),
+  ];
+}
+
+function ruleNumber(value, fallback, { min = 0, max = 1000 } = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, number));
+}
+
 export function appSettingsSyncDefaults() {
   return {
     commissionPct: env.commissionPct,
     subscriptionPrice: env.subscriptionPrice,
+    customerPlans: normalisePlanGroup(
+      DEFAULT_CUSTOMER_PLANS,
+      env.subscriptionPrice,
+    ),
+    workerPlans: { ...DEFAULT_WORKER_PLANS },
+    customerRules: { ...DEFAULT_CUSTOMER_RULES },
+    workerRules: { ...DEFAULT_WORKER_RULES, feesPct: env.commissionPct },
     customerBenefits: [...DEFAULT_CUSTOMER_BENEFITS],
     workerBenefits: [...DEFAULT_WORKER_BENEFITS],
     upiId: "rahishcnrb@ybl",
@@ -114,11 +226,65 @@ export async function appSettings({ fresh = false } = {}) {
     ...stored,
   };
   merged.customerBenefits = normaliseCustomerBenefits(merged.customerBenefits);
-  if (!Array.isArray(merged.workerBenefits) || merged.workerBenefits.length === 0) {
-    merged.workerBenefits = [...DEFAULT_WORKER_BENEFITS];
-  } else if (merged.workerBenefits.some((benefit) => LEGACY_CUSTOMER_BENEFITS.has(benefit))) {
-    merged.workerBenefits = [...DEFAULT_WORKER_BENEFITS];
-  }
+  merged.workerBenefits = normaliseWorkerBenefits(merged.workerBenefits);
+
+  // Membership prices and role-specific rules. The legacy scalar fields are
+  // still returned and written for older clients, but these groups are now the
+  // source of truth for billing.
+  const customerMonthly = ruleNumber(
+    merged.subscriptionPrice,
+    env.subscriptionPrice,
+    { min: 0, max: 100000 },
+  );
+  merged.customerPlans = normalisePlanGroup(
+    stored.customerPlans,
+    customerMonthly,
+  );
+  merged.workerPlans = normalisePlanGroup(
+    stored.workerPlans,
+    DEFAULT_WORKER_PLANS.monthly,
+  );
+  merged.subscriptionPrice = merged.customerPlans.monthly;
+
+  const storedCustomerRules = stored.customerRules || {};
+  merged.customerRules = {
+    urgentFeePct: ruleNumber(
+      storedCustomerRules.urgentFeePct,
+      DEFAULT_CUSTOMER_RULES.urgentFeePct,
+      { min: 0, max: 100 },
+    ),
+    cancellationMinutes: ruleNumber(
+      storedCustomerRules.cancellationMinutes,
+      DEFAULT_CUSTOMER_RULES.cancellationMinutes,
+      { min: 1, max: 1440 },
+    ),
+    proCancellationMinutes: ruleNumber(
+      storedCustomerRules.proCancellationMinutes,
+      DEFAULT_CUSTOMER_RULES.proCancellationMinutes,
+      { min: 1, max: 1440 },
+    ),
+  };
+
+  const storedWorkerRules = stored.workerRules || {};
+  merged.workerRules = {
+    feesPct: ruleNumber(
+      storedWorkerRules.feesPct ?? merged.commissionPct,
+      env.commissionPct,
+      { min: 0, max: 40 },
+    ),
+    urgentFeePct: ruleNumber(
+      storedWorkerRules.urgentFeePct,
+      DEFAULT_WORKER_RULES.urgentFeePct,
+      { min: 0, max: 100 },
+    ),
+    cancellationMinutes: ruleNumber(
+      storedWorkerRules.cancellationMinutes,
+      DEFAULT_WORKER_RULES.cancellationMinutes,
+      { min: 1, max: 1440 },
+    ),
+  };
+  merged.commissionPct = merged.workerRules.feesPct;
+
   cachedSettings = merged;
   cachedAt = Date.now();
   return cachedSettings;

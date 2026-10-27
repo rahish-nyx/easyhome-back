@@ -46,10 +46,12 @@ test("matches an online worker in the same service area and radius", () => {
   assert.equal(workerMatchesBooking(worker(), booking, zone), true);
 });
 
-test("rejects workers from another city, state, or locality", () => {
-  assert.equal(workerMatchesBooking(worker({ city: "Ranchi" }), booking, zone), false);
-  assert.equal(workerMatchesBooking(worker({ state: "Bihar" }), booking, zone), false);
-  assert.equal(workerMatchesBooking(worker({ areaName: "Dumri" }), booking, zone), false);
+test("matches nearby workers even when city, state, or locality labels differ", () => {
+  // Radius is the source of truth. Reverse-geocoded labels can disagree for the
+  // same physical neighbourhood, so they must not block a nearby match.
+  assert.equal(workerMatchesBooking(worker({ city: "Ranchi" }), booking, zone), true);
+  assert.equal(workerMatchesBooking(worker({ state: "Bihar" }), booking, zone), true);
+  assert.equal(workerMatchesBooking(worker({ areaName: "Dumri" }), booking, zone), true);
 });
 
 test("rejects inactive zones and workers outside the configured radius", () => {
@@ -63,9 +65,19 @@ test("rejects inactive zones and workers outside the configured radius", () => {
   );
 });
 
-test("requires coordinates and prefers Pro workers among eligible candidates", () => {
-  assert.equal(workerMatchesBooking(worker({ lat: null, lng: null }), booking, zone), false);
+test("falls back to text matching for legacy records without coordinates", () => {
+  assert.equal(workerMatchesBooking(worker({ lat: null, lng: null }), booking, zone), true);
+  assert.equal(
+    workerMatchesBooking(
+      worker({ lat: null, lng: null, city: "Ranchi" }),
+      booking,
+      zone,
+    ),
+    false,
+  );
+});
 
+test("prefers Pro workers among eligible candidates", () => {
   const standard = worker({ id: "standard", premium: false });
   const lowerRatedPro = worker({ id: "pro", premium: true, rating: 3.5 });
   const topRatedStandard = worker({

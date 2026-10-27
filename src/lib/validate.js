@@ -195,15 +195,29 @@ export const serviceSchema = z.object({
   name: z.string().trim().min(2).max(60),
   key: z.string().trim().min(2).max(40),
   icon: z.string().trim().max(40).default("wrench"),
+  subheading: z.string().trim().max(80).optional().default(""),
   description: z.string().trim().max(180).optional().default(""),
   fromPrice: z.coerce.number().int().min(0).max(100000).default(199),
   active: formBoolean.default(true),
   order: z.coerce.number().int().min(0).max(999).default(0),
 });
 
+export const servicePricingBulkSchema = z.object({
+  updates: z
+    .array(
+      z.object({
+        id: z.string().trim().min(1).max(120),
+        fromPrice: z.coerce.number().int().min(0).max(100000),
+      }),
+    )
+    .min(1)
+    .max(500),
+});
+
 export const promoSchema = z.object({
   title: z.string().trim().min(2).max(80),
   subtitle: z.string().trim().max(140).optional().default(""),
+  embedHtml: z.string().trim().max(20000).optional().default(""),
   ctaText: z.string().trim().max(30).optional().default("Book now"),
   ctaLink: z
     .string()
@@ -232,10 +246,21 @@ export const footerLinkSchema = z.object({
     .min(1)
     .max(200)
     .refine(
-      (path) => path.startsWith("/") && !path.startsWith("//") && !path.includes("\\"),
-      "Footer links must use an internal path.",
+      (href) => {
+        if (href.startsWith("/")) {
+          return !href.startsWith("//") && !href.includes("\\");
+        }
+        try {
+          const url = new URL(href);
+          return url.protocol === "https:";
+        } catch {
+          return false;
+        }
+      },
+      "Footer links must use an internal path or a full https:// URL.",
     )
     .refine((href) => {
+      if (/^https:\/\//i.test(href)) return true;
       const path = href.split(/[?#]/, 1)[0].replace(/\/+$/, "") || "/";
       return (
         ["/", "/services", "/search", "/book", "/bookings", "/profile", "/subscription", "/chat", "/faq", "/auth", "/worker", "/worker/support"].includes(path) ||
@@ -245,7 +270,10 @@ export const footerLinkSchema = z.object({
         /^\/legal\/[a-zA-Z0-9_-]+$/.test(path)
       );
     }, "Choose a supported EasyHome page destination."),
-  group: z.enum(["company", "legal", "support", "services", "professionals"]).default("legal"),
+  group: z
+    .enum(["company", "legal", "support", "services", "professionals", "social"])
+    .default("legal"),
+  icon: z.string().trim().max(30).optional().default(""),
   active: formBoolean.default(true),
   order: z.coerce.number().int().min(0).max(999).default(0),
 });
@@ -287,9 +315,33 @@ export const trackingPhaseSchema = z.object({
   note: z.string().trim().max(240).optional().or(z.literal("")),
 });
 
+const planPrice = z.coerce.number().int().min(0).max(100000);
+
+export const planGroupSchema = z.object({
+  monthly: planPrice.optional(),
+  quarterly: planPrice.optional(),
+  yearly: planPrice.optional(),
+});
+
+export const customerRulesSchema = z.object({
+  urgentFeePct: z.coerce.number().min(0).max(100).optional(),
+  cancellationMinutes: z.coerce.number().int().min(1).max(1440).optional(),
+  proCancellationMinutes: z.coerce.number().int().min(1).max(1440).optional(),
+});
+
+export const workerRulesSchema = z.object({
+  feesPct: z.coerce.number().min(0).max(40).optional(),
+  urgentFeePct: z.coerce.number().min(0).max(100).optional(),
+  cancellationMinutes: z.coerce.number().int().min(1).max(1440).optional(),
+});
+
 export const settingsSchema = z.object({
   commissionPct: z.coerce.number().min(0).max(40).optional(),
   subscriptionPrice: z.coerce.number().int().min(0).max(100000).optional(),
+  customerPlans: planGroupSchema.optional(),
+  workerPlans: planGroupSchema.optional(),
+  customerRules: customerRulesSchema.optional(),
+  workerRules: workerRulesSchema.optional(),
   customerBenefits: formStringArray.optional(),
   workerBenefits: formStringArray.optional(),
   upiId: z.string().trim().max(100).optional(),
