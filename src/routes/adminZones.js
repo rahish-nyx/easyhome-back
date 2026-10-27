@@ -14,6 +14,7 @@ import {
 } from "../lib/tracking.js";
 import {
   allServiceZones,
+  invalidateZoneCache,
   normalizeZone,
   zonePoint,
 } from "../lib/zones.js";
@@ -103,6 +104,7 @@ adminZonesRouter.post(
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
+    invalidateZoneCache();
     await audit(req.user.uid, "zone.create", { zoneId: ref.id, ...body });
     res.status(201).json({ zone: normalizeZone(docToJson(await ref.get())) });
   }),
@@ -144,6 +146,7 @@ adminZonesRouter.patch(
       { ...updates, updatedAt: FieldValue.serverTimestamp() },
       { merge: true },
     );
+    invalidateZoneCache();
     await audit(req.user.uid, "zone.update", { zoneId: ref.id, ...updates });
     res.json({ ok: true, zone: normalizeZone(docToJson(await ref.get())) });
   }),
@@ -158,6 +161,7 @@ adminZonesRouter.delete(
       throw new ApiError(404, "Service zone not found.", "ZONE_NOT_FOUND");
     }
     await ref.delete();
+    invalidateZoneCache();
     await audit(req.user.uid, "zone.delete", {
       zoneId: req.params.id,
       cityName: snap.data().cityName || "",

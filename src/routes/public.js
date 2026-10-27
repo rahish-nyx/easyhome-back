@@ -24,6 +24,19 @@ const reverseGeocodeCache = new Map();
 let reverseGeocodeQueue = Promise.resolve();
 let reverseGeocodeLastRequestAt = 0;
 
+const BOOTSTRAP_CACHE_TTL_MS = 15 * 60 * 1000;
+let bootstrapCache = null;
+let bootstrapCachedAt = 0;
+let bootstrapPromise = null;
+
+const TOP_RATED_CACHE_TTL_MS = 5 * 60 * 1000;
+let topRatedCache = null;
+let topRatedCachedAt = 0;
+let topRatedPromise = null;
+
+const WORKERS_CACHE_TTL_MS = 2 * 60 * 1000;
+const workersDirectoryCache = new Map();
+
 function coordinate(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
@@ -108,67 +121,97 @@ async function fetchReverseGeocode(url) {
   }
 }
 
+async function loadBootstrapPayload() {
+  const [servicesSnap, citiesSnap, zones, promosSnap, footerLinksSnap, settings] = await Promise.all([
+    collections.services.orderBy("order", "asc").get(),
+    collections.cities.orderBy("name", "asc").get(),
+    allServiceZones(),
+    collections.promos.orderBy("order", "asc").get(),
+    collections.footerLinks.get(),
+    appSettings(),
+  ]);
+
+  const now = Date.now();
+  const services = docsToJson(servicesSnap).filter(
+    (service) => service.active !== false,
+  );
+  const cities = docsToJson(citiesSnap).filter((city) => city.active !== false);
+  const promos = docsToJson(promosSnap).filter((promo) => {
+    if (promo.active === false) return false;
+    const starts = promo.startsAt ? new Date(promo.startsAt).getTime() : 0;
+    const ends = promo.endsAt ? new Date(promo.endsAt).getTime() : 0;
+    if (starts && starts > now) return false;
+    if (ends && ends < now) return false;
+    return true;
+  });
+  const allFooterLinks = docsToJson(footerLinksSnap);
+  const footerLinks = allFooterLinks.filter((link) => link.active !== false);
+  const hiddenFooterHrefs = allFooterLinks
+    .filter((link) => link.active === false)
+    .map((link) => link.href)
+    .filter(Boolean);
+
+  return {
+    services,
+    cities,
+    zones,
+    promos,
+    footerLinks,
+    hiddenFooterHrefs,
+    settings,
+    version: 2,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
 /**
  * Single round-trip bootstrap payload for the PWA shell.
- * Cached at the edge for 60s; the client also caches it locally.
+ *
+ * The catalogue changes rarely but is needed by every page. Caching it in
+ * function memory for 15 minutes (and at the edge for 5) keeps a burst of
+ * visitors from turning into one Firestore read per page view. If a refresh
+ * fails, the previous payload is still served so the shell stays usable.
  */
 publicRouter.get(
   "/bootstrap",
   asyncHandler(async (_req, res) => {
-    const [servicesSnap, citiesSnap, zonesSnap, promosSnap, footerLinksSnap, settings] = await Promise.all([
-      collections.services.orderBy("order", "asc").get(),
-      collections.cities.orderBy("name", "asc").get(),
-      collections.serviceZones.get(),
-      collections.promos.orderBy("order", "asc").get(),
-      collections.footerLinks.get(),
-      appSettings(),
-    ]);
-
     const now = Date.now();
-    const services = docsToJson(servicesSnap).filter(
-      (service) => service.active !== false,
-    );
-    const cities = docsToJson(citiesSnap).filter((city) => city.active !== false);
-    const zones = docsToJson(zonesSnap)
-      .map((zone) => ({
-        ...zone,
-        latitude:
-          zone.latitude == null && zone.lat == null
-            ? null
-            : Number(zone.latitude ?? zone.lat),
-        longitude:
-          zone.longitude == null && zone.lng == null
-            ? null
-            : Number(zone.longitude ?? zone.lng),
-        radiusKm: Number(zone.radiusKm) || 10,
-      }));
-    const promos = docsToJson(promosSnap).filter((promo) => {
-      if (promo.active === false) return false;
-      const starts = promo.startsAt ? new Date(promo.startsAt).getTime() : 0;
-      const ends = promo.endsAt ? new Date(promo.endsAt).getTime() : 0;
-      if (starts && starts > now) return false;
-      if (ends && ends < now) return false;
-      return true;
-    });
-    const allFooterLinks = docsToJson(footerLinksSnap);
-    const footerLinks = allFooterLinks.filter((link) => link.active !== false);
-    const hiddenFooterHrefs = allFooterLinks
-      .filter((link) => link.active === false)
-      .map((link) => link.href)
-      .filter(Boolean);
+    const fresh =
+      bootstrapCache !== null &&
+      now - bootstrapCachedAt < BOOTSTRAP_CACHE_TTL_MS;
+    let cacheState = fresh ? "HIT" : "MISS";
 
-    res.set("Cache-Control", "public, max-age=15, stale-while-revalidate=60");
-    res.json({
-      services,
-      cities,
-      zones,
-      promos,
-      footerLinks,
-      hiddenFooterHrefs,
-      settings,
-      version: 2,
-      fetchedAt: new Date().toISOString(),
-    });
+    if (!fresh) {
+      if (!bootstrapPromise) {
+        bootstrapPromise = loadBootstrapPayload()
+          .then((payload) => {
+            bootstrapCache = payload;
+            bootstrapCachedAt = Date.now();
+            return payload;
+          })
+          .finally(() => {
+            bootstrapPromise = null;
+          });
+      }
+
+      try {
+        await bootstrapPromise;
+      } catch (error) {
+        if (!bootstrapCache) throw error;
+        cacheState = "STALE";
+      }
+    }
+
+    res.set(
+      "Cache-Control",
+      "public, max-age=60, s-maxage=300, stale-while-revalidate=600",
+    );
+    res.set(
+      "Vercel-CDN-Cache-Control",
+      "public, s-maxage=300, stale-while-revalidate=600",
+    );
+    res.set("X-Catalogue-Cache", cacheState);
+    res.json(bootstrapCache);
   }),
 );
 
@@ -426,89 +469,171 @@ publicRouter.get(
     }
 
     const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50);
-    // Do not pre-filter by the city label. A professional may be registered
+    // workersPublic is the approved-worker projection. Querying it directly
+    // avoids a full workers scan plus one extra read per candidate on every
+    // 30-second nearby poll while preserving the same public result shape.
+    // Do not pre-filter by the city label: a professional may be registered
     // under a neighbouring ward, district or legacy spelling while physically
     // inside the same live radius. Coordinates decide eligibility below.
-    const snap = await collections.workers
-      .where("status", "==", "approved")
-      .limit(1000)
+    const snap = await collections.workersPublic
+      .where("online", "==", true)
+      .limit(200)
       .get();
     const eligible = prioritizeWorkers(
-      docsToJson(snap).filter(
-        (worker) =>
-          workerMatchesLocation(
-            worker,
-            {
-              cityName,
-              state,
-              areaName: zoneCheck.zone?.areaName || areaName,
-              lat,
-              lng,
-            },
-            zoneCheck.zone,
-          ),
+      docsToJson(snap).filter((worker) =>
+        workerMatchesLocation(
+          worker,
+          {
+            cityName,
+            state,
+            areaName: zoneCheck.zone?.areaName || areaName,
+            lat,
+            lng,
+          },
+          zoneCheck.zone,
+        ),
       ),
       premiumActive,
     ).slice(0, limit);
-    const publicSnapshots = await Promise.all(
-      eligible.map((worker) => collections.workersPublic.doc(worker.id).get()),
-    );
-    const workers = publicSnapshots.flatMap((snapshot, index) =>
-      snapshot.exists
-        ? [
-            {
-              ...docToJson(snapshot),
-              distanceKm: workerDistanceKm(eligible[index], { lat, lng }),
-            },
-          ]
-        : [],
-    );
+    const workers = eligible.map((worker) => ({
+      ...worker,
+      distanceKm: workerDistanceKm(worker, { lat, lng }),
+    }));
 
     res.set("Cache-Control", "private, no-store");
     res.json({ workers, zoneAllowed: true, zoneId: zoneCheck.zone?.id || null });
   }),
 );
 
+async function loadTopRatedWorkers() {
+  // Read only the high-rated head of the public collection instead of scanning
+  // every worker. The result is cached in memory for five minutes below.
+  const snap = await collections.workersPublic
+    .orderBy("rating", "desc")
+    .limit(50)
+    .get();
+  return docsToJson(snap)
+    .sort((a, b) => {
+      const rating = (Number(b.rating) || 0) - (Number(a.rating) || 0);
+      if (rating) return rating;
+      const reviews =
+        (Number(b.reviewCount) || 0) - (Number(a.reviewCount) || 0);
+      if (reviews) return reviews;
+      return (
+        (Number(b.jobsCompleted) || 0) - (Number(a.jobsCompleted) || 0)
+      );
+    })
+    .map((worker) => ({ ...worker, isPremium: premiumActive(worker) }));
+}
+
 publicRouter.get(
   "/workers/top-rated",
   asyncHandler(async (req, res) => {
     const limit = Math.min(Math.max(Number(req.query.limit) || 5, 1), 12);
-    const snap = await collections.workersPublic.limit(500).get();
-    const workers = docsToJson(snap)
-      .sort((a, b) => {
-        const rating = (Number(b.rating) || 0) - (Number(a.rating) || 0);
-        if (rating) return rating;
-        const reviews =
-          (Number(b.reviewCount) || 0) - (Number(a.reviewCount) || 0);
-        if (reviews) return reviews;
-        return (
-          (Number(b.jobsCompleted) || 0) - (Number(a.jobsCompleted) || 0)
-        );
-      })
-      .slice(0, limit)
-      .map((worker) => ({ ...worker, isPremium: premiumActive(worker) }));
+    const now = Date.now();
+    const fresh =
+      topRatedCache !== null &&
+      now - topRatedCachedAt < TOP_RATED_CACHE_TTL_MS;
+    let cacheState = fresh ? "HIT" : "MISS";
 
-    res.set("Cache-Control", "public, max-age=60");
-    res.json({ workers });
+    if (!fresh) {
+      if (!topRatedPromise) {
+        topRatedPromise = loadTopRatedWorkers()
+          .then((workers) => {
+            topRatedCache = workers;
+            topRatedCachedAt = Date.now();
+            return workers;
+          })
+          .finally(() => {
+            topRatedPromise = null;
+          });
+      }
+
+      try {
+        await topRatedPromise;
+      } catch (error) {
+        if (!topRatedCache) throw error;
+        cacheState = "STALE";
+      }
+    }
+
+    res.set(
+      "Cache-Control",
+      "public, max-age=60, s-maxage=300, stale-while-revalidate=600",
+    );
+    res.set("X-Top-Rated-Cache", cacheState);
+    res.json({ workers: topRatedCache.slice(0, limit) });
   }),
 );
+
+async function loadWorkersDirectory(serviceKey) {
+  const queryRef = serviceKey
+    ? collections.workersPublic.where("serviceKey", "==", serviceKey)
+    : collections.workersPublic;
+  const snap = await queryRef.limit(500).get();
+  return prioritizeWorkers(docsToJson(snap), premiumActive).map((worker) => ({
+    ...worker,
+    isPremium: premiumActive(worker),
+  }));
+}
 
 publicRouter.get(
   "/workers",
   asyncHandler(async (req, res) => {
     const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50);
     const serviceKey = req.query.serviceKey ? String(req.query.serviceKey) : "";
+    const cacheKey = serviceKey || "__all__";
+    let entry = workersDirectoryCache.get(cacheKey);
+    const fresh =
+      Boolean(entry?.data) &&
+      Date.now() - entry.at < WORKERS_CACHE_TTL_MS;
+    let cacheState = fresh ? "HIT" : "MISS";
 
-    let queryRef = collections.workersPublic;
-    if (serviceKey) {
-      queryRef = collections.workersPublic.where("serviceKey", "==", serviceKey);
+    if (!fresh) {
+      if (!entry?.promise) {
+        const pending = loadWorkersDirectory(serviceKey)
+          .then((workers) => {
+            workersDirectoryCache.set(cacheKey, {
+              data: workers,
+              at: Date.now(),
+              promise: null,
+            });
+            return workers;
+          })
+          .catch((error) => {
+            const current = workersDirectoryCache.get(cacheKey);
+            if (current) {
+              workersDirectoryCache.set(cacheKey, {
+                ...current,
+                promise: null,
+              });
+            }
+            throw error;
+          });
+        entry = {
+          data: entry?.data || null,
+          at: entry?.at || 0,
+          promise: pending,
+        };
+        workersDirectoryCache.set(cacheKey, entry);
+      }
+
+      try {
+        await entry.promise;
+      } catch (error) {
+        const stale = workersDirectoryCache.get(cacheKey);
+        if (!stale?.data) throw error;
+        cacheState = "STALE";
+      }
+      entry = workersDirectoryCache.get(cacheKey) || entry;
     }
 
-    const snap = await queryRef.limit(500).get();
-    const workers = prioritizeWorkers(docsToJson(snap), premiumActive)
-      .map((worker) => ({ ...worker, isPremium: premiumActive(worker) }))
-      .slice(0, limit);
-    res.set("Cache-Control", "public, max-age=60");
+    const workers = (entry?.data || []).slice(0, limit);
+    res.set(
+      "Cache-Control",
+      "public, max-age=60, s-maxage=300, stale-while-revalidate=600",
+    );
+    res.set("X-Workers-Cache", cacheState);
     res.json({ workers });
   }),
 );

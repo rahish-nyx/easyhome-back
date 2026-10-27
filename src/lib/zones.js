@@ -181,18 +181,52 @@ export function evaluateServiceZones(
   };
 }
 
+const ZONES_CACHE_TTL_MS = 60 * 1000;
+let zonesCache = null;
+let zonesCachedAt = 0;
+let zonesCachePromise = null;
+
+export function invalidateZoneCache() {
+  zonesCache = null;
+  zonesCachedAt = 0;
+  zonesCachePromise = null;
+}
+
 export async function activeServiceZones() {
-  const snap = await collections.serviceZones.where("isActive", "==", true).get();
-  return docsToJson(snap).map(normalizeZone).filter(Boolean);
+  return (await allServiceZones()).filter((zone) => zone.isActive !== false);
 }
 
 export async function allServiceZones() {
-  const snap = await collections.serviceZones.get();
-  return docsToJson(snap)
-    .map(normalizeZone)
-    .filter(Boolean)
-    .sort((a, b) => String(a.state || "").localeCompare(String(b.state || "")) ||
-      String(a.cityName || "").localeCompare(String(b.cityName || "")));
+  if (
+    zonesCache !== null &&
+    Date.now() - zonesCachedAt < ZONES_CACHE_TTL_MS
+  ) {
+    return zonesCache;
+  }
+
+  if (zonesCachePromise) return zonesCachePromise;
+
+  zonesCachePromise = (async () => {
+    try {
+      const snap = await collections.serviceZones.get();
+      const zones = docsToJson(snap)
+        .map(normalizeZone)
+        .filter(Boolean)
+        .sort((a, b) => String(a.state || "").localeCompare(String(b.state || "")) ||
+          String(a.cityName || "").localeCompare(String(b.cityName || "")));
+      zonesCache = zones;
+      zonesCachedAt = Date.now();
+      return zones;
+    } catch (error) {
+      // Keep dispatch alive during a transient Firestore outage/quota error.
+      if (zonesCache !== null) return zonesCache;
+      throw error;
+    } finally {
+      zonesCachePromise = null;
+    }
+  })();
+
+  return zonesCachePromise;
 }
 
 export async function validateBookingZone(
