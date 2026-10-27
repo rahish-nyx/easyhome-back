@@ -8,10 +8,9 @@ function zonePoint(zone) {
   const rawLng = zone?.longitude ?? zone?.lng;
   if (rawLat === null || rawLat === undefined || rawLat === "") return null;
   if (rawLng === null || rawLng === undefined || rawLng === "") return null;
-  const lat = Number(rawLat);
-  const lng = Number(rawLng);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-  return { lat, lng };
+  const point = { lat: Number(rawLat), lng: Number(rawLng) };
+  if (!hasCoords(point)) return null;
+  return point;
 }
 
 function zoneRadiusKm(zone) {

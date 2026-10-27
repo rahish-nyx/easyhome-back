@@ -5,6 +5,7 @@ import {
   workerMatchesBooking,
   workerMatchesLocation,
 } from "../src/lib/matching.js";
+import { hasCoords } from "../src/lib/geo.js";
 import { serviceZoneSchema } from "../src/lib/validate.js";
 import { evaluateServiceZones } from "../src/lib/zones.js";
 
@@ -154,4 +155,28 @@ test("coordinates select the containing area zone even if reverse-geocoded area 
   );
   assert.equal(result.allowed, true);
   assert.equal(result.zone.areaName, "Makatpur");
+});
+
+test("null-island and out-of-range coordinates are treated as missing", () => {
+  assert.equal(hasCoords({ lat: 0, lng: 0 }), false);
+  assert.equal(hasCoords({ lat: 24.18, lng: 86.3 }), true);
+  assert.equal(hasCoords({ lat: 124.18, lng: 86.3 }), false);
+  assert.equal(hasCoords({ lat: 24.18, lng: 186.3 }), false);
+});
+
+test("a worker with 0,0 coordinates falls back to matching text labels", () => {
+  assert.equal(workerMatchesBooking(worker({ lat: 0, lng: 0 }), booking, zone), true);
+  assert.equal(
+    workerMatchesBooking(worker({ lat: 0, lng: 0, city: "Ranchi" }), booking, zone),
+    false,
+  );
+});
+
+test("a null-island zone is never considered live", () => {
+  const result = evaluateServiceZones(
+    [{ ...zone, latitude: 0, longitude: 0 }],
+    { cityName: "Giridih", state: "Jharkhand", lat: 24.18, lng: 86.3 },
+  );
+  assert.equal(result.allowed, false);
+  assert.equal(Boolean(result.zone), false);
 });

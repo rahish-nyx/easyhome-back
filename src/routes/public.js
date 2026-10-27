@@ -418,14 +418,19 @@ publicRouter.get(
     });
     if (!zoneCheck.allowed) {
       res.set("Cache-Control", "private, no-store");
-      return res.json({ workers: [], zoneAllowed: false });
+      return res.json({
+        workers: [],
+        zoneAllowed: false,
+        message: zoneCheck.message || OUT_OF_ZONE_MESSAGE,
+      });
     }
 
     const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50);
+    // Do not pre-filter by the city label. A professional may be registered
+    // under a neighbouring ward, district or legacy spelling while physically
+    // inside the same live radius. Coordinates decide eligibility below.
     const snap = await collections.workers
-      .where("city", "==", cityName)
       .where("status", "==", "approved")
-      .where("online", "==", true)
       .limit(1000)
       .get();
     const eligible = prioritizeWorkers(
@@ -461,6 +466,30 @@ publicRouter.get(
 
     res.set("Cache-Control", "private, no-store");
     res.json({ workers, zoneAllowed: true, zoneId: zoneCheck.zone?.id || null });
+  }),
+);
+
+publicRouter.get(
+  "/workers/top-rated",
+  asyncHandler(async (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 5, 1), 12);
+    const snap = await collections.workersPublic.limit(500).get();
+    const workers = docsToJson(snap)
+      .sort((a, b) => {
+        const rating = (Number(b.rating) || 0) - (Number(a.rating) || 0);
+        if (rating) return rating;
+        const reviews =
+          (Number(b.reviewCount) || 0) - (Number(a.reviewCount) || 0);
+        if (reviews) return reviews;
+        return (
+          (Number(b.jobsCompleted) || 0) - (Number(a.jobsCompleted) || 0)
+        );
+      })
+      .slice(0, limit)
+      .map((worker) => ({ ...worker, isPremium: premiumActive(worker) }));
+
+    res.set("Cache-Control", "public, max-age=60");
+    res.json({ workers });
   }),
 );
 

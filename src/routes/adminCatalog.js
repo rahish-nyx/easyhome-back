@@ -288,10 +288,7 @@ adminCatalogRouter.delete(
     if (!(await ref.get()).exists) {
       throw new ApiError(404, "Footer link not found.", "FOOTER_LINK_NOT_FOUND");
     }
-    await ref.set(
-      { active: false, updatedAt: FieldValue.serverTimestamp() },
-      { merge: true },
-    );
+    await ref.delete();
     res.json({ ok: true });
   }),
 );

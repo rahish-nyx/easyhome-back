@@ -1,6 +1,6 @@
 /**
  * Seeds the Firebase project with an admin account, service catalogue,
- * cities, promo banners and site settings. Safe to run multiple times.
+ * promo banners, footer links and site settings. Service zones and cities are admin-managed. Safe to run multiple times.
  *
  * Usage: npm run seed
  */
@@ -89,92 +89,6 @@ const services = [
     description: "Verified tutors for school, maths, science and languages.",
     fromPrice: 349,
     order: 10,
-  },
-];
-
-const cities = [
-  { id: "indore", name: "Indore", lat: 22.7196, lng: 75.8577, radiusKm: 30 },
-  { id: "bhopal", name: "Bhopal", lat: 23.2599, lng: 77.4126, radiusKm: 30 },
-  { id: "ujjain", name: "Ujjain", lat: 23.1765, lng: 75.7885, radiusKm: 25 },
-  { id: "dewas", name: "Dewas", lat: 22.9676, lng: 76.0534, radiusKm: 20 },
-  { id: "jaipur", name: "Jaipur", lat: 26.9124, lng: 75.7873, radiusKm: 35 },
-  { id: "pune", name: "Pune", lat: 18.5204, lng: 73.8567, radiusKm: 35 },
-  { id: "mumbai", name: "Mumbai", lat: 19.076, lng: 72.8777, radiusKm: 35 },
-  { id: "delhi", name: "Delhi", lat: 28.6139, lng: 77.209, radiusKm: 35 },
-];
-
-const serviceZones = [
-  {
-    id: "zone-indore",
-    state: "Madhya Pradesh",
-    cityName: "Indore",
-    latitude: 22.7196,
-    longitude: 75.8577,
-    radiusKm: 30,
-    isActive: true,
-  },
-  {
-    id: "zone-bhopal",
-    state: "Madhya Pradesh",
-    cityName: "Bhopal",
-    latitude: 23.2599,
-    longitude: 77.4126,
-    radiusKm: 30,
-    isActive: true,
-  },
-  {
-    id: "zone-ujjain",
-    state: "Madhya Pradesh",
-    cityName: "Ujjain",
-    latitude: 23.1765,
-    longitude: 75.7885,
-    radiusKm: 25,
-    isActive: true,
-  },
-  {
-    id: "zone-dewas",
-    state: "Madhya Pradesh",
-    cityName: "Dewas",
-    latitude: 22.9676,
-    longitude: 76.0534,
-    radiusKm: 20,
-    isActive: true,
-  },
-  {
-    id: "zone-jaipur",
-    state: "Rajasthan",
-    cityName: "Jaipur",
-    latitude: 26.9124,
-    longitude: 75.7873,
-    radiusKm: 35,
-    isActive: false,
-  },
-  {
-    id: "zone-pune",
-    state: "Maharashtra",
-    cityName: "Pune",
-    latitude: 18.5204,
-    longitude: 73.8567,
-    radiusKm: 35,
-    isActive: false,
-  },
-  {
-    id: "zone-mumbai",
-    state: "Maharashtra",
-    cityName: "Mumbai",
-    latitude: 19.076,
-    longitude: 72.8777,
-    radiusKm: 35,
-    isActive: false,
-  },
-  {
-    id: "zone-delhi",
-    state: "Delhi",
-    cityName: "Delhi",
-    latitude: 28.6139,
-    longitude: 77.209,
-    radiusKm: 35,
-    isActive: false,
   },
 ];
 
@@ -314,35 +228,6 @@ async function main() {
     batch.push(`service:${service.key}`);
   }
 
-  for (const city of cities) {
-    await collections.cities.doc(city.id).set(
-      {
-        ...city,
-        active: true,
-        createdAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true },
-    );
-    batch.push(`city:${city.id}`);
-  }
-
-  // Service zones are admin-managed. Seed creates demo zones once and never
-  // overwrites later edits, so activating a city in the console is durable.
-  for (const zone of serviceZones) {
-    const { id, ...data } = zone;
-    const ref = collections.serviceZones.doc(id);
-    const existing = await ref.get();
-    if (!existing.exists) {
-      await ref.set({
-        ...data,
-        createdAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      batch.push(`zone:${id}`);
-    }
-  }
-
   for (const promo of promos) {
     const { id, ...data } = promo;
     await collections.promos.doc(id).set(
@@ -434,7 +319,7 @@ async function main() {
   );
 
   console.log(
-    `• ${services.length} services, ${cities.length} cities, ${serviceZones.length} service zones, ${promos.length} promos`,
+    `• ${services.length} services, ${promos.length} promos, admin-managed zones only`,
   );
   console.log("• settings/app updated");
   console.log(`\nDone. ${batch.length} catalogue documents are ready.\n`);

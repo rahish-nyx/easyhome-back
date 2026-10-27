@@ -6,25 +6,33 @@ function coordinate(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function usablePoint(point) {
+  const lat = coordinate(point?.lat ?? point?.latitude);
+  const lng = coordinate(point?.lng ?? point?.longitude);
+  if (lat === null || lng === null) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  // Null Island is the default value many devices and imports produce when
+  // location is missing. Treating it as real coordinates displaces workers by
+  // thousands of kilometres and hides them from local dispatch.
+  if (lat === 0 && lng === 0) return null;
+  return { lat, lng };
+}
+
 export function distanceMeters(a, b) {
-  const aLat = coordinate(a?.lat);
-  const aLng = coordinate(a?.lng);
-  const bLat = coordinate(b?.lat);
-  const bLng = coordinate(b?.lng);
-  if (aLat === null || aLng === null || bLat === null || bLng === null) {
-    return null;
-  }
+  const first = usablePoint(a);
+  const second = usablePoint(b);
+  if (!first || !second) return null;
 
   return Math.round(
     getDistance(
-      { latitude: aLat, longitude: aLng },
-      { latitude: bLat, longitude: bLng },
+      { latitude: first.lat, longitude: first.lng },
+      { latitude: second.lat, longitude: second.lng },
     ),
   );
 }
 
 export function hasCoords(value) {
-  return coordinate(value?.lat) !== null && coordinate(value?.lng) !== null;
+  return usablePoint(value) !== null;
 }
 
 /**

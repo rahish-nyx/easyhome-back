@@ -11,11 +11,17 @@ function coord(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function validPoint(lat, lng) {
+  if (lat === null || lng === null) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  if (lat === 0 && lng === 0) return null;
+  return { lat, lng };
+}
+
 export function zonePoint(zone) {
   const latitude = coord(zone?.latitude ?? zone?.lat);
   const longitude = coord(zone?.longitude ?? zone?.lng);
-  if (latitude === null || longitude === null) return null;
-  return { latitude, longitude };
+  return validPoint(latitude, longitude);
 }
 
 export function zoneRadiusKm(zone) {
@@ -117,22 +123,17 @@ export function evaluateServiceZones(
 
   if (hasPoint) {
     const point = { lat: latitude, lng: longitude };
-    const city = String(cityName || "").trim().toLowerCase();
-    const region = String(state || "").trim().toLowerCase();
-    const candidates = active.filter(
-      (zone) =>
-        (!city || String(zone.cityName || "").trim().toLowerCase() === city) &&
-        (!region ||
-          !zone.state ||
-          String(zone.state).trim().toLowerCase() === region),
-    );
-    const inside = candidates
+
+    // Coordinates are authoritative. Matching another city label (for example
+    // a reverse-geocoded district name) must never hide a live zone that
+    // actually contains the customer.
+    const inside = active
       .filter((zone) => isInsideZone(zone, point))
       .sort(
         (a, b) =>
           (distanceToZoneMeters(a, point) || 0) - (distanceToZoneMeters(b, point) || 0),
       );
-    const nearest = nearestZone(candidates.length ? candidates : active, point);
+    const nearest = nearestZone(active, point);
 
     if (inside.length) {
       const zone = inside[0];
