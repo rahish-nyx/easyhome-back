@@ -106,10 +106,9 @@ async function issueVerification(uid, email, name) {
     to: email,
     subject: "Verify your EasyHome email",
     html: emailLayout({
-      heading: `Welcome${name ? `, ${name.split(" ")[0]}` : ""}!`,
-      intro:
-        "Confirm your email address to unlock bookings, payments and your EasyHome account.",
-      body: `<p style="font-size:13px;color:#777">This link expires in 24 hours.</p>`,
+      heading: "Verify your EasyHome email",
+      intro: "Please confirm your email to unlock bookings, payments, and full account access.",
+      body: `<p style="font-size:13px;color:#777">This verification link expires in 24 hours.</p><p>After verifying, return to the app and tap <strong>"I have verified my email"</strong>.</p>`,
       ctaText: "Verify email",
       ctaUrl: url,
     }),
