@@ -70,11 +70,12 @@ export const env = {
   googleClientId:
     process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "",
   corsOrigins: asList(process.env.CORS_ORIGINS, [
+    "https://easyhome-front.vercel.app",
     "http://localhost:5173",
     "http://localhost:4173",
     "http://localhost:3000",
   ]),
-  publicWebUrl: (process.env.PUBLIC_WEB_URL || "http://localhost:5173").replace(
+  publicWebUrl: (process.env.PUBLIC_WEB_URL || "https://easyhome-front.vercel.app").replace(
     /\/+$/,
     "",
   ),
