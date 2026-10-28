@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { FieldValue, Timestamp } from "../lib/firestore.js";
 import { collections, db } from "../config/firebase.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { requireApprovedWorker, requireAuth } from "../middleware/auth.js";
@@ -39,7 +39,7 @@ import {
   phaseForBooking,
   phaseHistoryEntry,
 } from "../lib/tracking.js";
-import { docToJson, lastMonths, monthKey, toDate } from "../lib/utils.js";
+import { docToJson, docsToJson, lastMonths, monthKey, toDate } from "../lib/utils.js";
 
 export const workerRouter = Router();
 
@@ -830,6 +830,37 @@ workerRouter.post(
     );
 
     res.json({ ok: true });
+  }),
+);
+
+workerRouter.get(
+  "/worker/bookings",
+  requireAuth,
+  requireApprovedWorker,
+  asyncHandler(async (req, res) => {
+    const snap = await collections.bookings
+      .where("workerId", "==", req.user.uid)
+      .orderBy("createdAt", "desc")
+      .limit(80)
+      .get();
+    res.set("Cache-Control", "private, no-store");
+    res.json({ bookings: docsToJson(snap) });
+  }),
+);
+
+workerRouter.get(
+  "/worker/job-feed",
+  requireAuth,
+  requireApprovedWorker,
+  asyncHandler(async (req, res) => {
+    const serviceKey = req.query.serviceKey ? String(req.query.serviceKey) : "";
+    let queryRef = collections.jobFeed
+      .where("workerId", "==", req.user.uid)
+      .where("status", "==", "open");
+    if (serviceKey) queryRef = queryRef.where("serviceKey", "==", serviceKey);
+    const snap = await queryRef.orderBy("createdAt", "desc").limit(40).get();
+    res.set("Cache-Control", "private, no-store");
+    res.json({ jobs: docsToJson(snap) });
   }),
 );
 

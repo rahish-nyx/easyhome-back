@@ -1,96 +1,17 @@
 /**
- * Seeds the Firebase project with an admin account, service catalogue,
- * promo banners, footer links and site settings. Service zones and cities are admin-managed. Safe to run multiple times.
+ * Seeds MongoDB with the EasyHome admin account, the full 181-service
+ * catalogue, promo banners, footer links and site settings. Service zones and
+ * cities remain admin-managed. Safe to run multiple times.
  *
  * Usage: npm run seed
  */
-import { FieldValue } from "firebase-admin/firestore";
-import { auth, collections } from "../src/config/firebase.js";
+import { connectDb } from "../src/config/db.js";
+import { collections } from "../src/config/firebase.js";
 import { env } from "../src/config/env.js";
+import { FieldValue } from "../src/lib/firestore.js";
+import { hashPassword, normalizeEmail } from "../src/lib/auth.js";
+import { DEFAULT_SERVICES } from "../src/data/catalogue.js";
 import { SERVICE_SUBHEADINGS } from "./serviceSubheadings.js";
-
-const services = [
-  {
-    key: "cleaning",
-    name: "Home Cleaning",
-    icon: "sparkles",
-    description: "Deep cleaning, bathrooms, kitchens and full-home refresh.",
-    fromPrice: 299,
-    order: 1,
-  },
-  {
-    key: "plumbing",
-    name: "Plumbing",
-    icon: "wrench",
-    description: "Leaks, taps, tanks, pipelines and bathroom fittings.",
-    fromPrice: 199,
-    order: 2,
-  },
-  {
-    key: "electrical",
-    name: "Electrical",
-    icon: "zap",
-    description: "Wiring, fans, lights, switches, MCB and inverters.",
-    fromPrice: 199,
-    order: 3,
-  },
-  {
-    key: "carpentry",
-    name: "Carpentry",
-    icon: "hammer",
-    description: "Doors, hinges, furniture repair and custom fittings.",
-    fromPrice: 249,
-    order: 4,
-  },
-  {
-    key: "appliance",
-    name: "Appliance Repair",
-    icon: "plug-zap",
-    description: "AC, fridge, washing machine, microwave and geyser.",
-    fromPrice: 299,
-    order: 5,
-  },
-  {
-    key: "salon",
-    name: "Salon & Beauty",
-    icon: "scissors",
-    description: "At-home haircuts, grooming, facials and bridal prep.",
-    fromPrice: 299,
-    order: 6,
-  },
-  {
-    key: "painting",
-    name: "Painting",
-    icon: "paintbrush",
-    description: "Room painting, touch-ups, waterproofing and texture.",
-    fromPrice: 499,
-    order: 7,
-  },
-  {
-    key: "pest",
-    name: "Pest Control",
-    icon: "bug",
-    description: "Cockroaches, termites, mosquitoes and rodent control.",
-    fromPrice: 399,
-    order: 8,
-  },
-  {
-    key: "moving",
-    name: "Packers & Movers",
-    icon: "truck",
-    description: "Local shifting, packing, loading and safe transport.",
-    fromPrice: 999,
-    order: 9,
-  },
-  {
-    key: "tutoring",
-    name: "Home Tutoring",
-    icon: "graduation-cap",
-    description: "Verified tutors for school, maths, science and languages.",
-    fromPrice: 349,
-    order: 10,
-  },
-];
 
 const promos = [
   {
@@ -105,7 +26,7 @@ const promos = [
   {
     id: "easyhome-pro",
     title: "EasyHome Pro",
-    subtitle: "Zero fees, priority jobs and a verified Pro badge for ₹199/month.",
+    subtitle: "Zero fees, priority jobs and a verified Pro badge for ₹1,199/month.",
     ctaText: "Go Pro",
     ctaLink: "/subscription",
     theme: "dark",
@@ -113,8 +34,9 @@ const promos = [
   },
   {
     id: "refer-earn",
-    title: "Refer & earn ₹51 each",
-    subtitle: "Invite a new customer. After their first completed service and admin verification, you both get ₹51 approved.",
+    title: "Refer & earn ₹151 each",
+    subtitle:
+      "Invite a new customer. After their first completed service and admin verification, you both get ₹151 approved.",
     ctaText: "Refer a friend",
     ctaLink: "/refer",
     theme: "blue",
@@ -139,37 +61,61 @@ const footerLinks = [
 async function seedAdmin() {
   if (!env.adminEmail || !env.adminPassword) {
     console.log("⚠  ADMIN_EMAIL / ADMIN_PASSWORD not set — skipping admin account.");
-    return;
+    return null;
   }
-  if (env.adminPassword.length < 12) {
-    console.log("⚠  ADMIN_PASSWORD must be at least 12 characters — skipping admin account.");
-    return;
-  }
-
-  let user;
-  try {
-    user = await auth.getUserByEmail(env.adminEmail);
-    console.log(`• Admin account exists: ${env.adminEmail}`);
-  } catch {
-    user = await auth.createUser({
-      email: env.adminEmail,
-      password: env.adminPassword,
-      displayName: env.adminName,
-      emailVerified: true,
-    });
-    console.log(`• Created admin account: ${env.adminEmail}`);
+  if (env.adminPassword.length < 8) {
+    console.log("⚠  ADMIN_PASSWORD must be at least 8 characters — skipping admin account.");
+    return null;
   }
 
-  await auth.setCustomUserClaims(user.uid, {
-    role: "admin",
-    admin: true,
-    workerApproved: false,
-  });
+  const email = normalizeEmail(env.adminEmail);
+  const snap = await collections.users.where("email", "==", email).limit(1).get();
+  let uid;
+  let existing = null;
 
-  await collections.admins.doc(user.uid).set(
+  if (!snap.empty) {
+    uid = snap.docs[0].id;
+    existing = snap.docs[0].data();
+    console.log(`ℹ Admin account exists: ${email}`);
+  } else {
+    uid = collections.users.doc().id;
+    console.log(`✓ Creating admin account: ${email}`);
+  }
+
+  const passwordHash = await hashPassword(env.adminPassword);
+  await collections.users.doc(uid).set(
     {
-      uid: user.uid,
-      email: env.adminEmail,
+      uid,
+      name: env.adminName,
+      email,
+      phone: existing?.phone || "",
+      role: "admin",
+      photoPath: existing?.photoPath || "",
+      city: existing?.city || "",
+      addresses: existing?.addresses || [],
+      emailVerified: true,
+      disabled: false,
+      authProvider: "password",
+      passwordHash,
+      subscription: existing?.subscription || {
+        status: "none",
+        plan: null,
+        startAt: null,
+        endAt: null,
+      },
+      referralCode: existing?.referralCode || "",
+      referredBy: existing?.referredBy || "",
+      createdAt: existing?.createdAt || FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      lastLoginAt: existing?.lastLoginAt || null,
+    },
+    { merge: true },
+  );
+
+  await collections.admins.doc(uid).set(
+    {
+      uid,
+      email,
       name: env.adminName,
       createdAt: FieldValue.serverTimestamp(),
       seeded: true,
@@ -177,41 +123,11 @@ async function seedAdmin() {
     { merge: true },
   );
 
-  await collections.users.doc(user.uid).set(
-    {
-      uid: user.uid,
-      name: env.adminName,
-      email: env.adminEmail,
-      phone: "",
-      role: "admin",
-      photoPath: "",
-      city: "",
-      addresses: [],
-      emailVerified: true,
-      disabled: false,
-      subscription: { status: "none", plan: null, startAt: null, endAt: null },
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true },
-  );
+  return uid;
 }
 
-async function main() {
-  console.log("\nSeeding EasyHome Firebase…\n");
-
-  try {
-    await seedAdmin();
-  } catch (error) {
-    console.log(
-      `⚠  Could not create the admin account: ${error.message}\n` +
-        "   Enable Email/Password Authentication in the Firebase console, then run `npm run seed` again.",
-    );
-  }
-
-  const batch = [];
-
-  for (const service of services) {
+async function seedCatalogue() {
+  for (const service of DEFAULT_SERVICES) {
     await collections.services.doc(service.key).set(
       {
         ...service,
@@ -225,9 +141,10 @@ async function main() {
       },
       { merge: true },
     );
-    batch.push(`service:${service.key}`);
   }
+}
 
+async function seedPromos() {
   for (const promo of promos) {
     const { id, ...data } = promo;
     await collections.promos.doc(id).set(
@@ -242,9 +159,10 @@ async function main() {
       },
       { merge: true },
     );
-    batch.push(`promo:${id}`);
   }
+}
 
+async function seedFooterLinks() {
   for (const link of footerLinks) {
     const { id, ...data } = link;
     const ref = collections.footerLinks.doc(id);
@@ -255,10 +173,11 @@ async function main() {
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       });
-      batch.push(`footer-link:${id}`);
     }
   }
+}
 
+async function seedSettings() {
   const settingsRef = collections.settings.doc("app");
   const settingsSnap = await settingsRef.get();
   const existingSettings = settingsSnap.exists ? settingsSnap.data() : {};
@@ -317,16 +236,29 @@ async function main() {
     },
     { merge: true },
   );
-
-  console.log(
-    `• ${services.length} services, ${promos.length} promos, admin-managed zones only`,
-  );
-  console.log("• settings/app updated");
-  console.log(`\nDone. ${batch.length} catalogue documents are ready.\n`);
-  console.log("Next: sign in at /admin with the seeded admin email.\n");
 }
 
-main().catch((error) => {
-  console.error("\nSeed failed:", error.message);
-  process.exit(1);
-});
+async function main() {
+  console.log("\nSeeding EasyHome MongoDB…\n");
+  await connectDb();
+
+  const adminUid = await seedAdmin();
+  await seedCatalogue();
+  await seedPromos();
+  await seedFooterLinks();
+  await seedSettings();
+
+  console.log(
+    `✓ ${DEFAULT_SERVICES.length} services, ${promos.length} promos, ${footerLinks.length} footer links`,
+  );
+  console.log("✓ settings/app updated");
+  if (adminUid) console.log(`✓ admin ready (${env.adminEmail})`);
+  console.log("\nNext: sign in at /admin with the seeded admin email.\n");
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error("\nSeed failed:", error.message);
+    process.exit(1);
+  });

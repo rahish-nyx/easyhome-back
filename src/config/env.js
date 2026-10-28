@@ -1,5 +1,4 @@
 import "dotenv/config";
-import { existsSync } from "node:fs";
 
 const asBool = (value, fallback = false) => {
   if (value === undefined || value === "") return fallback;
@@ -29,84 +28,59 @@ function cloudinaryCredentials() {
         cloudinaryApiSecret ||= decodeURIComponent(parsed.password);
       }
     } catch {
-      console.warn("CLOUDINARY_URL is invalid; explicit Cloudinary variables may be used instead.");
+      console.warn(
+        "CLOUDINARY_URL is invalid; explicit Cloudinary variables may be used instead.",
+      );
     }
   }
 
   return { cloudinaryCloudName, cloudinaryApiKey, cloudinaryApiSecret };
 }
 
-const emulator = Boolean(
-  process.env.FIRESTORE_EMULATOR_HOST ||
-    process.env.FIREBASE_AUTH_EMULATOR_HOST,
-);
-
 const missing = [];
-const credentialsFile = process.env.GOOGLE_APPLICATION_CREDENTIALS || "";
-// On Vercel the file cannot be uploaded (it is gitignored and not part of the
-// build), so a path that does not resolve must not count as credentials.
-const hasServiceAccountFile = Boolean(credentialsFile && existsSync(credentialsFile));
-if (credentialsFile && !hasServiceAccountFile) {
-  console.warn(
-    `GOOGLE_APPLICATION_CREDENTIALS points to "${credentialsFile}", which does not exist. ` +
-      "Ignoring it; set FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY instead.",
-  );
-}
-if (!emulator) {
-  for (const key of [
-    "FIREBASE_PROJECT_ID",
-    "FIREBASE_CLIENT_EMAIL",
-    "FIREBASE_PRIVATE_KEY",
-  ]) {
-    if (
-      !process.env[key] &&
-      !process.env.FIREBASE_SERVICE_ACCOUNT_JSON &&
-      !hasServiceAccountFile
-    ) {
-      missing.push(key);
-    }
-  }
-}
+if (!process.env.MONGODB_URI) missing.push("MONGODB_URI");
+if (!process.env.JWT_SECRET) missing.push("JWT_SECRET");
 
 if (missing.length) {
   console.error(
     [
       "",
       "  EasyHome API cannot start.",
-      `  Missing Firebase credentials: ${missing.join(", ")}`,
+      `  Missing MongoDB/auth settings: ${missing.join(", ")}`,
       "",
       "  Fix: copy backend/.env.example to backend/.env and fill in the",
-      "  service account values from Firebase Console → Project settings.",
+      "  MongoDB Atlas connection string and a strong JWT secret.",
       "",
     ].join("\n"),
   );
   if (process.env.NODE_ENV === "production") process.exit(1);
 }
 
-const projectId =
-  process.env.FIREBASE_PROJECT_ID ||
-  process.env.GCLOUD_PROJECT ||
-  "demo-easyhome";
 const cloudinary = cloudinaryCredentials();
 
 export const env = {
   nodeEnv: process.env.NODE_ENV || "development",
   isProd: process.env.NODE_ENV === "production",
   isTest: process.env.NODE_ENV === "test",
-  emulator,
+  emulator: false,
   port: Number(process.env.PORT || 5000),
-  projectId,
-  clientEmail: process.env.FIREBASE_CLIENT_EMAIL || "",
-  privateKey: (process.env.FIREBASE_PRIVATE_KEY || "").replace(/\\n/g, "\n"),
-  serviceAccountJson: process.env.FIREBASE_SERVICE_ACCOUNT_JSON || "",
+  mongoUri: process.env.MONGODB_URI || "",
+  jwtSecret: process.env.JWT_SECRET || "easyhome-dev-only-change-me",
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN || "30d",
+  googleClientId:
+    process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "",
   corsOrigins: asList(process.env.CORS_ORIGINS, [
     "http://localhost:5173",
     "http://localhost:4173",
     "http://localhost:3000",
   ]),
-  publicWebUrl: process.env.PUBLIC_WEB_URL || "http://localhost:5173",
+  publicWebUrl: (process.env.PUBLIC_WEB_URL || "http://localhost:5173").replace(
+    /\/+$/,
+    "",
+  ),
   resendApiKey: process.env.RESEND_API_KEY || "",
-  mailFrom: process.env.MAIL_FROM || "EasyHome <official.easyhomeservices@gmail.com>",
+  mailFrom:
+    process.env.MAIL_FROM || "EasyHome <official.easyhomeservices@gmail.com>",
   adminEmail: process.env.ADMIN_EMAIL || "",
   adminPassword: process.env.ADMIN_PASSWORD || "",
   adminName: process.env.ADMIN_NAME || "EasyHome Admin",

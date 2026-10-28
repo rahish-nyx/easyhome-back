@@ -73,6 +73,79 @@ export const sessionSchema = z.object({
     .optional(),
 });
 
+export const registerSchema = z.object({
+  email: z.string().trim().email().max(160),
+  password: z.string().min(8).max(128),
+  name: z.string().trim().min(2).max(80),
+  phone: phone.optional().or(z.literal("")),
+  role: z.enum(["customer", "worker"]).optional().default("customer"),
+  city: z.string().trim().max(80).optional(),
+  state: z.string().trim().max(80).optional(),
+  areaName: z.string().trim().max(80).optional(),
+  service: z.string().trim().max(60).optional(),
+  serviceKey: z.string().trim().max(40).optional(),
+  area: z.string().trim().max(120).optional(),
+  pricePerWork: z.coerce.number().int().min(0).max(100000).optional(),
+  lat: coord.nullable().optional(),
+  lng: coord.nullable().optional(),
+  referralCode: z
+    .string()
+    .trim()
+    .max(12)
+    .regex(/^[a-zA-Z0-9]*$/, "Invalid referral code")
+    .optional(),
+});
+
+export const loginSchema = z.object({
+  email: z.string().trim().email().max(160),
+  password: z.string().min(1).max(128),
+});
+
+export const googleAuthSchema = z
+  .object({
+    credential: z.string().trim().min(20).max(5000).optional(),
+    accessToken: z.string().trim().min(20).max(5000).optional(),
+    role: z.enum(["customer", "worker"]).optional(),
+    name: z.string().trim().min(2).max(80).optional(),
+    phone: phone.optional().or(z.literal("")),
+    city: z.string().trim().max(80).optional(),
+    state: z.string().trim().max(80).optional(),
+    areaName: z.string().trim().max(80).optional(),
+    service: z.string().trim().max(60).optional(),
+    serviceKey: z.string().trim().max(40).optional(),
+    area: z.string().trim().max(120).optional(),
+    pricePerWork: z.coerce.number().int().min(0).max(100000).optional(),
+    lat: coord.nullable().optional(),
+    lng: coord.nullable().optional(),
+    referralCode: z
+      .string()
+      .trim()
+      .max(12)
+      .regex(/^[a-zA-Z0-9]*$/, "Invalid referral code")
+      .optional(),
+  })
+  .refine((value) => value.credential || value.accessToken, {
+    message: "Google credential is required.",
+    path: ["credential"],
+  });
+
+export const tokenSchema = z.object({
+  token: z.string().trim().min(20).max(200),
+});
+
+export const resetPasswordSchema = z.object({
+  token: z.string().trim().min(20).max(200),
+  password: z.string().min(8).max(128),
+});
+
+export const forgotPasswordSchema = z.object({
+  email: z.string().trim().email().max(160),
+});
+
+export const emailSchema = z.object({
+  email: z.string().trim().email().max(160),
+});
+
 export const profileSchema = z.object({
   name: z.string().trim().min(2).max(80).optional(),
   phone: phone.optional(),

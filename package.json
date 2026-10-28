@@ -2,7 +2,7 @@
   "name": "easyhome-api",
   "version": "2.0.0",
   "private": true,
-  "description": "EasyHome API — Firebase Auth + Firestore backend for the EasyHome PWA",
+  "description": "EasyHome API — MongoDB Atlas + Mongoose backend for the EasyHome PWA",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
@@ -16,15 +16,18 @@
     "node": ">=20"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "cloudinary": "^2.11.0",
     "compression": "^1.8.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "express-rate-limit": "^8.2.1",
-    "firebase-admin": "^13.5.0",
     "geolib": "^4.0.0",
+    "google-auth-library": "^11.3.1",
     "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.11.4",
     "multer": "^2.0.2",
     "razorpay": "^2.9.8",
     "zod": "^4.1.12"

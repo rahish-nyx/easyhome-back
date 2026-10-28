@@ -1,9 +1,9 @@
-import { auth, collections } from "../config/firebase.js";
-import { env } from "../config/env.js";
+import { collections } from "../config/firebase.js";
+import { verifyToken } from "../lib/auth.js";
 import { ApiError } from "./errors.js";
 
 /**
- * Reads an optional Firebase ID token. Never throws for missing tokens —
+ * Reads an optional EasyHome bearer token. Never throws for missing tokens —
  * individual routes decide whether authentication is required.
  */
 export async function attachUser(req, _res, next) {
@@ -16,19 +16,41 @@ export async function attachUser(req, _res, next) {
   }
 
   try {
-    const decoded = await auth.verifyIdToken(token, env.isProd);
+    const decoded = verifyToken(token);
+    const uid = decoded.uid || decoded.sub;
+    if (!uid) throw new Error("Token is missing a subject");
+
+    const snap = await collections.users.doc(uid).get();
+    if (!snap.exists) {
+      return next(
+        new ApiError(
+          401,
+          "Your session is no longer valid. Please sign in again.",
+          "AUTH_INVALID",
+        ),
+      );
+    }
+
+    const profile = snap.data();
+    if (profile.disabled === true) {
+      return next(
+        new ApiError(403, "This account has been disabled.", "ACCOUNT_DISABLED"),
+      );
+    }
+
     req.user = {
-      uid: decoded.uid,
-      email: decoded.email || "",
-      name: decoded.name || "",
-      picture: decoded.picture || "",
-      role: decoded.role || "customer",
+      uid,
+      email: profile.email || decoded.email || "",
+      name: profile.name || decoded.name || "",
+      picture: profile.photoPath || decoded.picture || "",
+      role: profile.role || decoded.role || "customer",
       admin: decoded.admin === true,
       workerApproved: decoded.workerApproved === true,
-      emailVerified: decoded.email_verified === true,
+      emailVerified: profile.emailVerified === true,
     };
     return next();
-  } catch {
+  } catch (error) {
+    if (error instanceof ApiError) return next(error);
     return next(
       new ApiError(
         401,
@@ -91,7 +113,7 @@ export async function requireApprovedWorker(req, _res, next) {
   }
   if (req.user.workerApproved) return next();
 
-  // Fallback to Firestore for tokens minted before a claim refresh.
+  // Fallback to MongoDB for tokens minted before a claim refresh.
   const snap = await collections.workers.doc(req.user.uid).get();
   if (snap.exists && snap.data().status === "approved") {
     req.user.workerApproved = true;

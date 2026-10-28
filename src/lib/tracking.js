@@ -1,4 +1,4 @@
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { FieldValue, Timestamp } from "./firestore.js";
 import { collections } from "../config/firebase.js";
 import { distanceMeters } from "./geo.js";
 import { notify, notifyAdmins } from "./notify.js";

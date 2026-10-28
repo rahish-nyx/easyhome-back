@@ -1,12 +1,17 @@
 import { app } from "./app.js";
 import { env } from "./config/env.js";
+import { connectDb } from "./config/db.js";
 import { startTrackingWatchdog } from "./lib/tracking.js";
+
+connectDb().catch((error) => {
+  console.error("MongoDB is not available at startup:", error.message);
+});
 
 const server = app.listen(env.port, () => {
   console.log("");
   console.log("  EasyHome API v2");
   console.log(`  http://localhost:${env.port}`);
-  console.log(`  env: ${env.nodeEnv}${env.emulator ? " (Firebase emulators)" : ""}`);
+  console.log(`  env: ${env.nodeEnv} (MongoDB Atlas)`);
   console.log("");
 });
 

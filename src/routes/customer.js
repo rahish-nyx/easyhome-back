@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { FieldValue, Timestamp } from "../lib/firestore.js";
 import { collections, db } from "../config/firebase.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { requireAuth, requireVerified } from "../middleware/auth.js";
@@ -1075,6 +1075,70 @@ customerRouter.patch(
     }
 
     res.json({ ok: true });
+  }),
+);
+
+customerRouter.get(
+  "/bookings",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const snap = await collections.bookings
+      .where("customerId", "==", req.user.uid)
+      .orderBy("createdAt", "desc")
+      .limit(60)
+      .get();
+    res.set("Cache-Control", "private, no-store");
+    res.json({ bookings: docsToJson(snap) });
+  }),
+);
+
+customerRouter.get(
+  "/bookings/:id",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const snap = await collections.bookings.doc(req.params.id).get();
+    if (!snap.exists) {
+      throw new ApiError(404, "Booking not found.", "BOOKING_NOT_FOUND");
+    }
+    const booking = snap.data();
+    const allowed =
+      booking.customerId === req.user.uid ||
+      booking.workerId === req.user.uid ||
+      Boolean(req.user.admin);
+    if (!allowed) {
+      throw new ApiError(403, "You do not have access to this booking.", "FORBIDDEN");
+    }
+    res.set("Cache-Control", "private, no-store");
+    res.json({ booking: docToJson(snap) });
+  }),
+);
+
+customerRouter.get(
+  "/notifications",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const snap = await collections.notifications
+      .where("userId", "==", req.user.uid)
+      .orderBy("createdAt", "desc")
+      .limit(30)
+      .get();
+    res.set("Cache-Control", "private, no-store");
+    res.json({ notifications: docsToJson(snap) });
+  }),
+);
+
+customerRouter.get(
+  "/chat/messages",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const snap = await collections.chatThreads
+      .doc(req.user.uid)
+      .collection("messages")
+      .orderBy("createdAt", "asc")
+      .limit(150)
+      .get();
+    res.set("Cache-Control", "private, no-store");
+    res.json({ messages: docsToJson(snap) });
   }),
 );
 

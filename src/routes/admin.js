@@ -1,8 +1,13 @@
 import { Router } from "express";
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
-import { auth, collections, db } from "../config/firebase.js";
+import { FieldValue, Timestamp } from "../lib/firestore.js";
+import { collections, db } from "../config/firebase.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { requireAdmin } from "../middleware/auth.js";
+import {
+  defaultNameFromEmail,
+  hashPassword,
+  normalizeEmail,
+} from "../lib/auth.js";
 import { privateCloudinaryDownloadUrl } from "../lib/media.js";
 import { updateJobFeedStatus } from "../lib/jobFeed.js";
 import { emailLayout, notify, sendMail } from "../lib/notify.js";
@@ -184,7 +189,6 @@ adminRouter.patch(
     const uid = req.params.id;
 
     if (body.disabled !== undefined) {
-      await auth.updateUser(uid, { disabled: body.disabled }).catch(() => {});
       await collections.users.doc(uid).set(
         { disabled: body.disabled, updatedAt: FieldValue.serverTimestamp() },
         { merge: true },
@@ -802,15 +806,20 @@ adminRouter.get(
 adminRouter.post(
   "/admins",
   asyncHandler(async (req, res) => {
-    const email = String(req.body?.email || "").trim().toLowerCase();
+    const email = normalizeEmail(req.body?.email);
     const password = String(req.body?.password || "");
     const name = String(req.body?.name || "EasyHome Admin").trim();
     if (!email) throw new ApiError(422, "Email is required.", "EMAIL_REQUIRED");
 
-    let record;
-    try {
-      record = await auth.getUserByEmail(email);
-    } catch {
+    const snap = await collections.users
+      .where("email", "==", email)
+      .limit(1)
+      .get();
+
+    let uid;
+    if (!snap.empty) {
+      uid = snap.docs[0].id;
+    } else {
       if (password.length < 8) {
         throw new ApiError(
           422,
@@ -818,26 +827,43 @@ adminRouter.post(
           "PASSWORD_REQUIRED",
         );
       }
-      record = await auth.createUser({ email, password, displayName: name });
+      uid = collections.users.doc().id;
+      await collections.users.doc(uid).set({
+        uid,
+        email,
+        name: name || defaultNameFromEmail(email),
+        phone: "",
+        role: "customer",
+        photoPath: "",
+        city: "",
+        addresses: [],
+        emailVerified: true,
+        disabled: false,
+        subscription: { status: "none", plan: null, startAt: null, endAt: null },
+        referralCode: "",
+        referredBy: "",
+        authProvider: "password",
+        passwordHash: await hashPassword(password),
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        lastLoginAt: null,
+      });
     }
 
-    if ((await collections.admins.doc(record.uid).get()).exists) {
+    if ((await collections.admins.doc(uid).get()).exists) {
       throw new ApiError(409, "This account is already an admin.", "ALREADY_ADMIN");
     }
 
-    const currentClaims = record.customClaims || {};
-    await auth.setCustomUserClaims(record.uid, { ...currentClaims, admin: true });
-
-    await collections.admins.doc(record.uid).set({
-      uid: record.uid,
+    await collections.admins.doc(uid).set({
+      uid,
       email,
       name,
       createdAt: FieldValue.serverTimestamp(),
       createdBy: req.user.uid,
     });
 
-    await audit(req.user.uid, "admin.add", { uid: record.uid, email });
-    res.status(201).json({ ok: true, uid: record.uid });
+    await audit(req.user.uid, "admin.add", { uid, email });
+    res.status(201).json({ ok: true, uid });
   }),
 );
 
@@ -852,11 +878,6 @@ adminRouter.delete(
       throw new ApiError(409, "At least one admin must remain.", "LAST_ADMIN");
     }
 
-    const record = await auth.getUser(req.params.id).catch(() => null);
-    if (record) {
-      const currentClaims = record.customClaims || {};
-      await auth.setCustomUserClaims(req.params.id, { ...currentClaims, admin: false });
-    }
     await collections.admins.doc(req.params.id).delete();
     await audit(req.user.uid, "admin.remove", { uid: req.params.id });
     res.json({ ok: true });

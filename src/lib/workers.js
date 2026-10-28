@@ -1,6 +1,7 @@
-import { auth, collections } from "../config/firebase.js";
+import { collections } from "../config/firebase.js";
 import { premiumActive } from "./booking.js";
 import { docToJson } from "./utils.js";
+import { FieldValue } from "./firestore.js";
 
 function coordinate(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -52,14 +53,26 @@ export async function syncPublicWorker(uid) {
   return docToJson({ id: uid, exists: true, data: () => publicDoc });
 }
 
+/**
+ * Keeps the user document in step with role/approval changes. JWTs are short
+ * lived enough that the next `/auth/refresh` call picks these up, and the auth
+ * middleware also reads the current role from MongoDB on every request.
+ */
 export async function setClaimsPatch(uid, patch) {
-  const user = await auth.getUser(uid);
-  const current = user.customClaims || {};
-  await auth.setCustomUserClaims(uid, { ...current, ...patch });
+  await collections.users.doc(uid).set(
+    {
+      ...patch,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
 }
 
 export async function approveWorker(uid, { approved }) {
-  await setClaimsPatch(uid, { role: "worker", workerApproved: approved === true });
+  await setClaimsPatch(uid, {
+    role: "worker",
+    workerApproved: approved === true,
+  });
   await syncPublicWorker(uid);
 }
 

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { FieldValue, Timestamp } from "../lib/firestore.js";
 import { z } from "zod";
 import { collections, db } from "../config/firebase.js";
 import { env } from "../config/env.js";
