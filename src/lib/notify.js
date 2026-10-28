@@ -78,6 +78,8 @@ export async function sendMail({ to, subject, html, text }) {
       return { skipped: false, ok: false };
     }
 
+    console.log("Resend email sent OK — id:", response.headers.get("x-resend-id") || "n/a", "to:", Array.isArray(to) ? to.join(",") : to, "from:", env.mailFrom);
+
     return { skipped: false, ok: true };
   } catch (error) {
     console.warn("Resend email error:", error.message);
