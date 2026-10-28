@@ -34,7 +34,7 @@ const promos = [
   },
   {
     id: "refer-earn",
-    title: "Refer & earn ₹151 each",
+    title: "Refer & earn ₹51 each",
     subtitle:
       "Invite a new customer. After their first completed service and admin verification, you both get ₹151 approved.",
     ctaText: "Refer a friend",
