@@ -9,42 +9,30 @@ adminFoldersRouter.use(requireAdmin);
 const Folder = () => getModel("serviceFolders");
 const Service = () => getModel("services");
 
-/* GET all folders with service counts */
-adminFoldersRouter.get("/", asyncHandler(async (req, res) => {
-  const foldersSnap = await Folder().find().sort({ order: 1, name: 1 });
-  const folderIds = foldersSnap.map((d) => d._id.toString());
-  const servicesSnap = await Service().find({ folderId: { $in: folderIds } });
-  const counts = {};
-  for (const s of servicesSnap) {
-    const fid = s.folderId ? s.folderId.toString() : null;
-    if (fid) counts[fid] = (counts[fid] || 0) + 1;
-  }
-  const folders = foldersSnap.map((f) => ({
-    ...f.toObject(),
-    id: f._id.toString(),
-    servicesCount: counts[f._id.toString()] || 0,
-  }));
-  res.json({ folders });
+adminFoldersRouter.get("/", asyncHandler(async (_req, res) => {
+  const folders = await Folder().find().sort({ order: 1, name: 1 }).lean();
+  const folderIds = folders.map((f) => f._id.toString());
+  const counts = await Service().aggregate([
+    { $match: { folderId: { $in: folderIds instanceof Array ? folderIds : [folderIds] } } },
+    { $group: { _id: "$folderId", count: { $sum: 1 } } },
+  ]);
+  const countMap = {};
+  for (const c of counts) countMap[c._id] = c.count;
+  res.json({ folders: folders.map((f) => ({ ...f, id: f._id.toString(), servicesCount: countMap[f._id.toString()] || 0 })) });
 }));
 
-/* POST create folder */
 adminFoldersRouter.post("/", asyncHandler(async (req, res) => {
   const { name, description, icon, isLive, order } = req.body || {};
   if (!name || !name.trim()) throw new ApiError(422, "Folder name required");
   const exists = await Folder().findOne({ name: name.trim() });
   if (exists) throw new ApiError(409, "Folder name already exists");
   const folder = await Folder().create({
-    name: name.trim(),
-    description: description || "",
-    icon: icon || "layers",
-    isLive: isLive !== false,
-    order: Number(order) || 0,
-    createdAt: new Date(),
+    name: name.trim(), description: description || "", icon: icon || "layers",
+    isLive: isLive !== false, order: Number(order) || 0, createdAt: new Date(),
   });
   res.status(201).json({ folder: { ...folder.toObject(), id: folder._id.toString() } });
 }));
 
-/* PUT update folder */
 adminFoldersRouter.put("/:id", asyncHandler(async (req, res) => {
   const { name, description, icon, isLive, order } = req.body || {};
   const updates = {};
@@ -62,7 +50,6 @@ adminFoldersRouter.put("/:id", asyncHandler(async (req, res) => {
   res.json({ folder: { ...folder.toObject(), id: folder._id.toString() } });
 }));
 
-/* PATCH toggle isLive */
 adminFoldersRouter.patch("/:id/toggle", asyncHandler(async (req, res) => {
   const folder = await Folder().findById(req.params.id);
   if (!folder) throw new ApiError(404, "Folder not found");
@@ -71,7 +58,6 @@ adminFoldersRouter.patch("/:id/toggle", asyncHandler(async (req, res) => {
   res.json({ folder: { ...folder.toObject(), id: folder._id.toString(), isLive: folder.isLive } });
 }));
 
-/* DELETE folder + unassign services */
 adminFoldersRouter.delete("/:id", asyncHandler(async (req, res) => {
   const folder = await Folder().findById(req.params.id);
   if (!folder) throw new ApiError(404, "Folder not found");
@@ -80,9 +66,8 @@ adminFoldersRouter.delete("/:id", asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
-/* POST assign/remove service to folder */
 adminFoldersRouter.post("/:id/services", asyncHandler(async (req, res) => {
-  const { serviceId, action } = req.body || {}; // action = "assign" or "remove"
+  const { serviceId, action } = req.body || {};
   if (!serviceId) throw new ApiError(422, "serviceId required");
   const folder = await Folder().findById(req.params.id);
   if (!folder) throw new ApiError(404, "Folder not found");
