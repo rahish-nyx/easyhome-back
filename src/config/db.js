@@ -214,7 +214,18 @@ register("Service", "services", {
   icon: String,
   order: Number,
   active: Boolean,
-}, [{ key: 1 }, { order: 1 }, { active: 1 }]);
+  folderId: String,
+  isLive: Boolean,
+}, [{ key: 1 }, { order: 1 }, { active: 1 }, { folderId: 1 }, { isLive: 1 }]);
+
+register("ServiceFolder", "serviceFolders", {
+  name: { type: String, required: true, unique: true },
+  description: String,
+  icon: String,
+  isLive: { type: Boolean, default: true },
+  order: { type: Number, default: 0 },
+  createdAt: Date,
+}, [{ name: 1 }, { isLive: 1 }, { order: 1 }]);
 
 register("City", "cities", {
   name: String,

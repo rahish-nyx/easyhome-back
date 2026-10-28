@@ -14,6 +14,7 @@ import { adminRouter } from "./routes/admin.js";
 import { adminCatalogRouter } from "./routes/adminCatalog.js";
 import { adminMoneyRouter } from "./routes/adminMoney.js";
 import { adminZonesRouter } from "./routes/adminZones.js";
+import { adminFoldersRouter } from "./routes/adminFolders.js";
 import { paymentRouter } from "./routes/payment.js";
 import { referralRouter } from "./routes/referrals.js";
 
@@ -120,6 +121,7 @@ app.use("/api/admin", adminRouter);
 app.use("/api/admin", adminCatalogRouter);
 app.use("/api/admin", adminMoneyRouter);
 app.use("/api/admin", adminZonesRouter);
+app.use("/api/admin", adminFoldersRouter);
 
 app.use(notFound);
 app.use(errorHandler);
