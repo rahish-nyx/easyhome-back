@@ -121,7 +121,7 @@ app.use("/api/admin", adminRouter);
 app.use("/api/admin", adminCatalogRouter);
 app.use("/api/admin", adminMoneyRouter);
 app.use("/api/admin", adminZonesRouter);
-app.use("/api/admin", adminFoldersRouter);
+app.use("/api/admin/folders", adminFoldersRouter);
 
 app.use(notFound);
 app.use(errorHandler);
