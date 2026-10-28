@@ -368,3 +368,59 @@ adminCatalogRouter.post(
     res.json({ ok: true });
   }),
 );
+
+/* ------------------------------- FOLDERS ------------------------------- */
+
+adminCatalogRouter.get(
+  "/folders/:id",
+  asyncHandler(async (req, res) => {
+    const folderName = req.params.id;
+    const snap = await collections.services.where("folder", "==", folderName).get();
+    res.json({ folder: { id: folderName, name: folderName, active: snap.empty ? true : (snap.docs[0].data().active !== false), servicesCount: snap.size }, services: docsToJson(snap) });
+  }),
+);
+
+adminCatalogRouter.put(
+  "/folders/:id",
+  asyncHandler(async (req, res) => {
+    const folderName = req.params.id;
+    const { name, active } = req.body || {};
+    const snap = await collections.services.where("folder", "==", folderName).get();
+    const batch = db.batch();
+    snap.docs.forEach((doc) => {
+      const update = { updatedAt: FieldValue.serverTimestamp() };
+      if (name !== undefined) update.name = name;
+      if (active !== undefined) update.active = active;
+      batch.set(collections.services.doc(doc.id), update, { merge: true });
+    });
+    await batch.commit();
+    res.json({ ok: true, updated: snap.size });
+  }),
+);
+
+adminCatalogRouter.patch(
+  "/folders/:id/toggle",
+  asyncHandler(async (req, res) => {
+    const folderName = req.params.id;
+    const snap = await collections.services.where("folder", "==", folderName).get();
+    let currentActive = true;
+    if (!snap.empty) currentActive = snap.docs[0].data().active !== false;
+    const newActive = !currentActive;
+    const batch = db.batch();
+    snap.docs.forEach((doc) => batch.set(collections.services.doc(doc.id), { active: newActive, updatedAt: FieldValue.serverTimestamp() }, { merge: true }));
+    await batch.commit();
+    res.json({ ok: true, active: newActive, updated: snap.size });
+  }),
+);
+
+adminCatalogRouter.delete(
+  "/folders/:id",
+  asyncHandler(async (req, res) => {
+    const folderName = req.params.id;
+    const snap = await collections.services.where("folder", "==", folderName).get();
+    const batch = db.batch();
+    snap.docs.forEach((doc) => batch.delete(collections.services.doc(doc.id)));
+    await batch.commit();
+    res.json({ ok: true, deleted: snap.size });
+  }),
+);
