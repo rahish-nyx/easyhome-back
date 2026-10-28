@@ -1,11 +1,10 @@
-import { FieldValue } from "./firestore.js";
+import nodemailer from "nodemailer";
 import { collections, db } from "../config/firebase.js";
 import { env } from "../config/env.js";
+import { FieldValue } from "./firestore.js";
 
-/**
- * Creates an in-app notification (Firestore). This is the primary channel:
- * the PWA listens in real time and shows the bell badge instantly.
- */
+/* ------------------- In-app notifications (MongoDB adapter) ------------------- */
+
 export async function notify(userId, { title, body, type = "info", link = "" }) {
   if (!userId) return null;
   try {
@@ -49,43 +48,41 @@ export async function notifyAdmins({ title, body, type = "admin", link = "" }) {
   }
 }
 
-/**
- * Optional transactional email through Resend.
- * Never throws — notifications must not fail because email is down.
- */
+/* ------------------- SMTP email (Nodemailer + Brevo) ------------------- */
+
+const transporter = nodemailer.createTransport({
+  host: env.smtpHost || "smtp-relay.brevo.com",
+  port: Number(env.smtpPort || 587),
+  secure: false,
+  auth: {
+    user: env.smtpUser || process.env.SMTP_USER || "",
+    pass: env.smtpPassword || process.env.SMTP_PASSWORD || "",
+  },
+  tls: { rejectUnauthorized: false },
+});
+
 export async function sendMail({ to, subject, html, text }) {
-  if (!env.resendApiKey) return { skipped: true };
-
+  if (!env.smtpPassword && !process.env.SMTP_PASSWORD) {
+    console.warn("SMTP not configured — email skipped");
+    return { skipped: true };
+  }
   try {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.resendApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: env.mailFrom,
-        to: Array.isArray(to) ? to : [to],
-        subject,
-        html,
-        ...(text ? { text } : {}),
-      }),
+    const info = await transporter.sendMail({
+      from: env.mailFrom,
+      to: Array.isArray(to) ? to : [to],
+      subject,
+      html,
+      text,
     });
-
-    if (!response.ok) {
-      const body = await response.text();
-      console.warn("Resend email failed:", response.status, body.slice(0, 200));
-      return { skipped: false, ok: false };
-    }
-
-    console.log("Resend email sent OK — id:", response.headers.get("x-resend-id") || "n/a", "to:", Array.isArray(to) ? to.join(",") : to, "from:", env.mailFrom);
-
-    return { skipped: false, ok: true };
+    console.log("SMTP email sent:", info.messageId, "to:", Array.isArray(to) ? to.join(",") : to, "from:", env.mailFrom);
+    return { skipped: false, ok: true, messageId: info.messageId };
   } catch (error) {
-    console.warn("Resend email error:", error.message);
-    return { skipped: false, ok: false };
+    console.warn("SMTP email error:", error.message);
+    return { skipped: false, ok: false, error: error.message };
   }
 }
+
+/* ------------------- Email template ------------------- */
 
 export function emailLayout({ heading, intro, body = "", ctaText, ctaUrl }) {
   return `

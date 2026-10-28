@@ -79,10 +79,14 @@ export const env = {
     /\/+$/,
     "",
   ),
-  resendApiKey: process.env.RESEND_API_KEY || "",
+  smtpHost: process.env.SMTP_HOST || "smtp-relay.brevo.com",
+  smtpPort: Number(process.env.SMTP_PORT || 587),
+  smtpUser: process.env.SMTP_USER || "",
+  smtpPassword: process.env.SMTP_PASSWORD || "",
   mailFrom:
     (process.env.MAIL_FROM || "EasyHome <official.easyhomeservices@gmail.com>")
       .replace(/^"+|"+$/g, "")
+      .trim(),
       .trim(),
   adminEmail: process.env.ADMIN_EMAIL || "",
   adminPassword: process.env.ADMIN_PASSWORD || "",

@@ -29,6 +29,7 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.11.4",
     "multer": "^2.0.2",
+    "nodemailer": "^10.2.1",
     "razorpay": "^2.9.8",
     "zod": "^4.1.12"
   },
