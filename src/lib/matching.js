@@ -125,7 +125,11 @@ export function workerMatchesBooking(worker, booking, zone = null) {
   if (booking.preferredWorkerId && booking.preferredWorkerId !== workerId) {
     return false;
   }
-  if (!booking.serviceKey || worker.serviceKey !== booking.serviceKey) {
+  if (!booking.serviceKey) return false;
+
+  const workerTrades = Array.isArray(worker.trades) ? worker.trades : [];
+  const hasTrade = worker.serviceKey === booking.serviceKey || workerTrades.includes(booking.serviceKey);
+  if (!hasTrade) {
     return false;
   }
 

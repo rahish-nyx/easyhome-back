@@ -226,6 +226,7 @@ async function saveWorkerRecord(uid, body, user, existing = null) {
       photoPath: user.photoPath || "",
       service: body.service,
       serviceKey: body.serviceKey || body.service,
+      trades: Array.isArray(body.trades) ? body.trades : existing?.trades || [],
       pricePerWork: Math.max(0, Number(body.pricePerWork) || 199),
       area: body.area,
       city: body.city || "",

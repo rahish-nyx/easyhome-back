@@ -114,6 +114,7 @@ register("Worker", "workers", {
   phone: String,
   service: String,
   serviceKey: String,
+  trades: [String],
   status: String,
   online: Boolean,
   city: String,
@@ -131,6 +132,7 @@ register("Worker", "workers", {
 }, [
   { status: 1, createdAt: -1 },
   { serviceKey: 1, status: 1, online: 1 },
+  { trades: 1, status: 1, online: 1 },
   { rating: -1 },
   { premiumUntil: 1 },
   { createdAt: -1 },
@@ -140,6 +142,7 @@ register("WorkerPublic", "workersPublic", {
   uid: String,
   name: String,
   serviceKey: String,
+  trades: [String],
   city: String,
   state: String,
   areaName: String,
@@ -152,6 +155,7 @@ register("WorkerPublic", "workersPublic", {
   premiumUntil: Date,
 }, [
   { serviceKey: 1, rating: -1 },
+  { trades: 1, rating: -1 },
   { rating: -1 },
   { city: 1, serviceKey: 1 },
 ]);

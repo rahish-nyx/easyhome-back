@@ -36,12 +36,30 @@ app.use(
     origin(origin, callback) {
       // Native apps and server-to-server calls have no Origin header.
       if (!origin) return callback(null, true);
+      // Capacitor mobile apps on Android / iOS
+      if (
+        origin === "http://localhost" ||
+        origin === "https://localhost" ||
+        origin === "capacitor://localhost" ||
+        origin.startsWith("http://localhost:")
+      ) {
+        return callback(null, true);
+      }
       if (!env.isProd) return callback(null, true);
       if (env.corsOrigins.includes(origin)) return callback(null, true);
       return callback(null, false);
     },
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "Accept",
+      "Origin",
+      "Access-Control-Request-Method",
+      "Access-Control-Request-Headers",
+    ],
+    exposedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
     maxAge: 86400,
   }),

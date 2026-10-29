@@ -36,7 +36,7 @@ export function normalizeZone(zone) {
     latitude: coord(zone.latitude ?? zone.lat),
     longitude: coord(zone.longitude ?? zone.lng),
     radiusKm: zoneRadiusKm(zone),
-    isActive: zone.isActive !== false,
+    isActive: zone.isActive !== false && zonePoint(zone) !== null,
   };
 }
 

@@ -74,6 +74,9 @@ export const env = {
     "http://localhost:5173",
     "http://localhost:4173",
     "http://localhost:3000",
+    "http://localhost",
+    "https://localhost",
+    "capacitor://localhost",
   ]),
   publicWebUrl: (process.env.PUBLIC_WEB_URL || "https://easyhome-front.vercel.app").replace(
     /\/+$/,
