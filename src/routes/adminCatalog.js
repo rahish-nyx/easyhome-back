@@ -15,6 +15,7 @@ import {
   settingsSchema,
 } from "../lib/validate.js";
 import { invalidateSettings } from "../lib/booking.js";
+import { invalidateBootstrapCache } from "./public.js";
 import { docToJson, docsToJson } from "../lib/utils.js";
 
 export const adminCatalogRouter = Router();
@@ -261,6 +262,7 @@ adminCatalogRouter.post(
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
+    invalidateBootstrapCache();
     res.status(201).json({ link: docToJson(await ref.get()) });
   }),
 );
@@ -277,6 +279,7 @@ adminCatalogRouter.patch(
       throw new ApiError(404, "Footer link not found.", "FOOTER_LINK_NOT_FOUND");
     }
     await ref.set({ ...updates, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    invalidateBootstrapCache();
     res.json({ link: docToJson(await ref.get()) });
   }),
 );
@@ -289,6 +292,7 @@ adminCatalogRouter.delete(
       throw new ApiError(404, "Footer link not found.", "FOOTER_LINK_NOT_FOUND");
     }
     await ref.delete();
+    invalidateBootstrapCache();
     res.json({ ok: true });
   }),
 );

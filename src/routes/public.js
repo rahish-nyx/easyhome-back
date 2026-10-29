@@ -29,6 +29,15 @@ let bootstrapCache = null;
 let bootstrapCachedAt = 0;
 let bootstrapPromise = null;
 
+/**
+ * Drop the in-function bootstrap cache after an admin edit so the next public
+ * request sees new footer links immediately instead of waiting up to 15 min.
+ */
+export function invalidateBootstrapCache() {
+  bootstrapCache = null;
+  bootstrapCachedAt = 0;
+}
+
 const TOP_RATED_CACHE_TTL_MS = 5 * 60 * 1000;
 let topRatedCache = null;
 let topRatedCachedAt = 0;
