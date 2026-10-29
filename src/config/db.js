@@ -225,8 +225,13 @@ register("ServiceFolder", "serviceFolders", {
   icon: String,
   isLive: { type: Boolean, default: true },
   order: { type: Number, default: 0 },
+  // Home-page visibility is separate from `isLive`: a folder can stay public
+  // and browseable from /services while being hidden from the home page.
+  // Missing values on legacy documents mean "visible on home".
+  showOnHome: Boolean,
+  homeOrder: Number,
   createdAt: Date,
-}, [{ isLive: 1 }, { order: 1 }]);
+}, [{ isLive: 1 }, { order: 1 }, { showOnHome: 1, homeOrder: 1 }]);
 
 register("City", "cities", {
   name: String,

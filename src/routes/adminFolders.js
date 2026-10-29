@@ -2,6 +2,7 @@ import { Router } from "express";
 import { getModel } from "../config/db.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { asyncHandler, ApiError } from "../middleware/errors.js";
+import { invalidateBootstrapCache } from "./public.js";
 
 export const adminFoldersRouter = Router();
 adminFoldersRouter.use(requireAdmin);
@@ -24,10 +25,20 @@ function matchesFolder(service, aliases) {
   return aliases.includes(folderId) || aliases.includes(legacyFolder);
 }
 
+function homeOrderFrom(folder) {
+  const homeOrder = Number(folder?.homeOrder);
+  if (Number.isFinite(homeOrder) && homeOrder > 0) return homeOrder;
+  return Number(folder?.order) || 0;
+}
+
 function serialize(folder, servicesCount = 0) {
   return {
     ...folder,
     id: folderIdFrom(folder),
+    // Legacy folders predate home-page settings, so an undefined value must
+    // remain visible instead of disappearing after a deployment.
+    showOnHome: folder.showOnHome !== false,
+    homeOrder: homeOrderFrom(folder),
     servicesCount,
   };
 }
@@ -64,6 +75,75 @@ adminFoldersRouter.get(
   }),
 );
 
+/**
+ * Save the ordered list of folders shown on the customer/guest home page.
+ * `folderIds` is authoritative: folders in the array are visible in that
+ * order, every other folder stays public but is hidden from home.
+ */
+adminFoldersRouter.put(
+  "/home",
+  asyncHandler(async (req, res) => {
+    if (!Array.isArray(req.body?.folderIds)) {
+      throw new ApiError(422, "folderIds array required", "FOLDER_IDS_REQUIRED");
+    }
+
+    const folderIds = [];
+    for (const rawId of req.body.folderIds) {
+      const id = String(rawId ?? "").trim();
+      if (id && !folderIds.includes(id)) folderIds.push(id);
+    }
+
+    const folders = await Folder().find().lean();
+    const existingIds = new Set(folders.map(folderIdFrom));
+    const missing = folderIds.find((id) => !existingIds.has(id));
+    if (missing) {
+      throw new ApiError(422, `Folder not found: ${missing}`, "FOLDER_NOT_FOUND");
+    }
+
+    if (folders.length) {
+      await Folder().bulkWrite(
+        folders.map((folder) => {
+          const id = folderIdFrom(folder);
+          const position = folderIds.indexOf(id);
+          return {
+            updateOne: {
+              filter: { _id: folder._id },
+              update: {
+                $set: {
+                  showOnHome: position >= 0,
+                  homeOrder: position >= 0 ? position + 1 : 0,
+                },
+              },
+            },
+          };
+        }),
+      );
+    }
+
+    invalidateBootstrapCache();
+
+    const [updatedFolders, services] = await Promise.all([
+      Folder().find().sort({ order: 1, name: 1 }).lean(),
+      Service().find({}, { folderId: 1, folder: 1 }).lean(),
+    ]);
+    const counts = new Map();
+    for (const folder of updatedFolders) {
+      const aliases = folderAliases(folder);
+      counts.set(
+        folderIdFrom(folder),
+        services.filter((service) => matchesFolder(service, aliases)).length,
+      );
+    }
+
+    res.json({
+      folderIds,
+      folders: updatedFolders.map((folder) =>
+        serialize(folder, counts.get(folderIdFrom(folder)) || 0),
+      ),
+    });
+  }),
+);
+
 adminFoldersRouter.post(
   "/",
   asyncHandler(async (req, res) => {
@@ -80,9 +160,12 @@ adminFoldersRouter.post(
       icon: req.body?.icon || "layers",
       isLive: req.body?.isLive !== false,
       order: Number(req.body?.order) || 0,
+      showOnHome: req.body?.showOnHome !== false,
+      homeOrder: Number(req.body?.homeOrder) || 0,
       createdAt: new Date(),
     });
 
+    invalidateBootstrapCache();
     res.status(201).json({ folder: serialize(folder.toObject(), 0) });
   }),
 );
@@ -108,11 +191,18 @@ adminFoldersRouter.put(
     if (req.body?.icon !== undefined) updates.icon = req.body.icon;
     if (req.body?.isLive !== undefined) updates.isLive = Boolean(req.body.isLive);
     if (req.body?.order !== undefined) updates.order = Number(req.body.order) || 0;
+    if (req.body?.showOnHome !== undefined) {
+      updates.showOnHome = Boolean(req.body.showOnHome);
+    }
+    if (req.body?.homeOrder !== undefined) {
+      updates.homeOrder = Number(req.body.homeOrder) || 0;
+    }
 
     if (Object.keys(updates).length) {
       const updated = await Folder().findByIdAndUpdate(folder._id, updates, { new: true });
       if (!updated) throw new ApiError(404, "Folder not found", "FOLDER_NOT_FOUND");
       folder.set(updated.toObject());
+      invalidateBootstrapCache();
     }
 
     const aliases = folderAliases(folder);
@@ -131,6 +221,7 @@ adminFoldersRouter.patch(
 
     folder.isLive = !folder.isLive;
     await folder.save();
+    invalidateBootstrapCache();
 
     const aliases = folderAliases(folder);
     const servicesCount = await Service().countDocuments({
@@ -152,6 +243,7 @@ adminFoldersRouter.delete(
       { $set: { folderId: null, folder: null, updatedAt: new Date() } },
     );
     await Folder().deleteOne({ _id: folder._id });
+    invalidateBootstrapCache();
     res.json({ ok: true });
   }),
 );
@@ -196,6 +288,7 @@ adminFoldersRouter.post(
     }
     service.updatedAt = new Date();
     await service.save();
+    invalidateBootstrapCache();
 
     res.json({
       ok: true,

@@ -28,14 +28,19 @@ const BOOTSTRAP_CACHE_TTL_MS = 15 * 60 * 1000;
 let bootstrapCache = null;
 let bootstrapCachedAt = 0;
 let bootstrapPromise = null;
+let bootstrapVersion = 0;
 
 /**
  * Drop the in-function bootstrap cache after an admin edit so the next public
- * request sees new footer links immediately instead of waiting up to 15 min.
+ * request sees new folder/home settings immediately instead of waiting up to
+ * 15 min. Bumping the version also prevents a load that started before the
+ * edit from writing stale data back into the cache.
  */
 export function invalidateBootstrapCache() {
   bootstrapCache = null;
   bootstrapCachedAt = 0;
+  bootstrapPromise = null;
+  bootstrapVersion += 1;
 }
 
 const TOP_RATED_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -142,10 +147,17 @@ function buildPublicFolders(folders, services) {
         const legacyFolder = String(service.folder || "");
         return aliases.includes(folderId) || aliases.includes(legacyFolder);
       });
+      const homeOrder = Number(folder.homeOrder);
       return {
         ...folder,
         id,
         name,
+        // Legacy folders have no home settings; keep them visible on home.
+        showOnHome: folder.showOnHome !== false,
+        homeOrder:
+          Number.isFinite(homeOrder) && homeOrder > 0
+            ? homeOrder
+            : Number(folder.order) || 0,
         servicesCount: folderServices.length,
         serviceKeys: folderServices.map((service) => service.key).filter(Boolean),
       };
@@ -215,25 +227,33 @@ publicRouter.get(
       bootstrapCache !== null &&
       now - bootstrapCachedAt < BOOTSTRAP_CACHE_TTL_MS;
     let cacheState = fresh ? "HIT" : "MISS";
+    let payload = bootstrapCache;
 
     if (!fresh) {
+      const version = bootstrapVersion;
       if (!bootstrapPromise) {
         bootstrapPromise = loadBootstrapPayload()
-          .then((payload) => {
-            bootstrapCache = payload;
-            bootstrapCachedAt = Date.now();
-            return payload;
+          .then((loaded) => {
+            // Only the load started after the newest invalidation may write
+            // the cache. An older in-flight load can still answer its own
+            // request, but it must not repopulate stale data.
+            if (version === bootstrapVersion) {
+              bootstrapCache = loaded;
+              bootstrapCachedAt = Date.now();
+            }
+            return loaded;
           })
           .finally(() => {
-            bootstrapPromise = null;
+            if (version === bootstrapVersion) bootstrapPromise = null;
           });
       }
 
       try {
-        await bootstrapPromise;
+        payload = await bootstrapPromise;
       } catch (error) {
         if (!bootstrapCache) throw error;
         cacheState = "STALE";
+        payload = bootstrapCache;
       }
     }
 
@@ -246,7 +266,7 @@ publicRouter.get(
       "public, s-maxage=300, stale-while-revalidate=600",
     );
     res.set("X-Catalogue-Cache", cacheState);
-    res.json(bootstrapCache);
+    res.json(payload);
   }),
 );
 
