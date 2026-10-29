@@ -193,6 +193,8 @@ export const workerProfileSchema = z.object({
 
 export const availabilitySchema = z.object({
   online: z.boolean(),
+  lat: coord.nullable().optional(),
+  lng: coord.nullable().optional(),
 });
 
 export const bookingSchema = z.object({

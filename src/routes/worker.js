@@ -71,6 +71,87 @@ async function loadWorker(uid) {
   return { snap, worker: snap.data() };
 }
 
+async function dispatchOpenJobsToWorker(uid, worker) {
+  if (!worker?.online) return 0;
+  const pending = await collections.bookings
+    .where("status", "==", "pending")
+    .orderBy("createdAt", "desc")
+    .limit(200)
+    .get();
+  const matches = [];
+
+  for (const doc of pending.docs) {
+    const booking = { id: doc.id, ...doc.data() };
+    if (booking.preferredWorkerId && booking.preferredWorkerId !== uid) continue;
+    const zoneSnap = booking.serviceZoneId
+      ? await collections.serviceZones.doc(booking.serviceZoneId).get()
+      : null;
+    const zone = zoneSnap?.exists
+      ? { id: zoneSnap.id, ...zoneSnap.data(), isActive: zoneSnap.data().isActive !== false }
+      : null;
+    const premium = premiumActive(worker);
+    if (
+      canAcceptJobs(worker, { premium }).allowed &&
+      workerMatchesBooking({ ...worker, id: uid }, booking, zone)
+    ) {
+      const existingFeed = await collections.jobFeed.doc(jobFeedDocId(booking.id, uid)).get();
+      if (!existingFeed.exists || existingFeed.data().status !== "open") {
+        matches.push({ booking, zone });
+      }
+    }
+  }
+
+  if (!matches.length) return 0;
+  const now = FieldValue.serverTimestamp();
+  const feedBatch = db.batch();
+  const notificationBatch = db.batch();
+  for (const { booking, zone } of matches) {
+    feedBatch.set(
+      collections.jobFeed.doc(jobFeedDocId(booking.id, uid)),
+      {
+        bookingId: booking.id,
+        workerId: uid,
+        service: booking.service,
+        serviceKey: booking.serviceKey,
+        description: String(booking.description || "").slice(0, 180),
+        area: booking.area,
+        lat: booking.location?.lat ?? null,
+        lng: booking.location?.lng ?? null,
+        cityName: booking.cityName || "",
+        stateName: booking.stateName || "",
+        areaName: booking.areaName || "",
+        serviceZoneId: zone?.id || booking.serviceZoneId || null,
+        serviceZoneLatitude: zone?.latitude ?? booking.serviceZoneLatitude ?? null,
+        serviceZoneLongitude: zone?.longitude ?? booking.serviceZoneLongitude ?? null,
+        serviceZoneRadiusKm: zone?.radiusKm ?? booking.serviceZoneRadiusKm ?? null,
+        priority: booking.customerPriority || "standard",
+        customerPremium: Boolean(booking.customerPremium),
+        customerPriority: booking.customerPriority || "standard",
+        budget: Number(booking.budget) || 0,
+        urgency: booking.urgency || "normal",
+        status: "open",
+        preferredWorkerId: booking.preferredWorkerId || "",
+        createdAt: booking.createdAt || now,
+        updatedAt: now,
+      },
+      { merge: true },
+    );
+    const notificationRef = collections.notifications.doc();
+    notificationBatch.set(notificationRef, {
+      userId: uid,
+      title: booking.customerPriority === "pro" ? "Priority job near you" : "New job near you",
+      body: booking.service + " · " + booking.area + " · ₹" + (Number(booking.budget) || 0),
+      type: "new_job",
+      priority: booking.customerPriority || "standard",
+      link: "/worker?job=" + booking.id,
+      read: false,
+      createdAt: now,
+    });
+  }
+  await Promise.all([feedBatch.commit(), notificationBatch.commit()]);
+  return matches.length;
+}
+
 async function assertOwnJob(tx, bookingId, uid) {
   const ref = collections.bookings.doc(bookingId);
   const snap = await tx.get(ref);
@@ -151,16 +232,30 @@ workerRouter.patch(
   requireAuth,
   requireApprovedWorker,
   asyncHandler(async (req, res) => {
-    const { online } = availabilitySchema.parse(req.body || {});
+    const { online, lat, lng } = availabilitySchema.parse(req.body || {});
     const now = FieldValue.serverTimestamp();
+    const location = {};
+    if (lat !== undefined) location.lat = lat;
+    if (lng !== undefined) location.lng = lng;
     await collections.workers.doc(req.user.uid).set(
-      { online, lastSeenAt: now, updatedAt: now },
+      { online, ...location, lastSeenAt: now, updatedAt: now },
       { merge: true },
     );
     await collections.workersPublic.doc(req.user.uid).set(
-      { online, updatedAt: now },
+      { online, ...location, updatedAt: now },
       { merge: true },
     );
+    if (online) {
+      try {
+        const freshWorker = await collections.workers.doc(req.user.uid).get();
+        await dispatchOpenJobsToWorker(req.user.uid, {
+          ...(freshWorker.data() || {}),
+          online: true,
+        });
+      } catch (error) {
+        console.warn("Open-job dispatch on availability change failed:", error.message);
+      }
+    }
     res.json({ online });
   }),
 );
@@ -227,7 +322,8 @@ workerRouter.post(
       if (booking.status !== "pending") {
         throw new ApiError(409, "This job was already taken or cancelled.", "JOB_TAKEN");
       }
-      if (booking.serviceKey !== worker.serviceKey) {
+      const workerTrades = Array.isArray(worker.trades) ? worker.trades : [];
+      if (booking.serviceKey !== worker.serviceKey && !workerTrades.includes(booking.serviceKey)) {
         throw new ApiError(403, "This job is for a different trade.", "SERVICE_MISMATCH");
       }
       if (booking.preferredWorkerId && booking.preferredWorkerId !== uid) {
@@ -854,11 +950,21 @@ workerRouter.get(
   requireApprovedWorker,
   asyncHandler(async (req, res) => {
     const serviceKey = req.query.serviceKey ? String(req.query.serviceKey) : "";
+    const workerSnap = await collections.workers.doc(req.user.uid).get();
+    if (workerSnap.exists && workerSnap.data().online === true) {
+      await dispatchOpenJobsToWorker(req.user.uid, {
+        ...workerSnap.data(),
+        id: req.user.uid,
+      }).catch((error) =>
+        console.warn("Open-job dispatch on feed refresh failed:", error.message),
+      );
+    }
     let queryRef = collections.jobFeed
       .where("workerId", "==", req.user.uid)
       .where("status", "==", "open");
-    if (serviceKey) queryRef = queryRef.where("serviceKey", "==", serviceKey);
-    const snap = await queryRef.orderBy("createdAt", "desc").limit(40).get();
+    // Matching includes the worker's primary trade and saved trades. The
+    // booking was already radius-checked before this feed entry was created.
+    const snap = await queryRef.orderBy("createdAt", "desc").limit(80).get();
     res.set("Cache-Control", "private, no-store");
     res.json({ jobs: docsToJson(snap) });
   }),

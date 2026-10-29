@@ -185,8 +185,8 @@ customerRouter.post(
     const estimatedTotal = Math.max(0, originalTotal - promoDiscount);
 
     const workersSnap = await collections.workers
-      .where("serviceKey", "==", service.key)
       .where("status", "==", "approved")
+      .limit(500)
       .get();
     const candidates = prioritizeWorkers(
       workersSnap.docs
