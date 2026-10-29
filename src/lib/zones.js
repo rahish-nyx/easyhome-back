@@ -147,21 +147,6 @@ export function evaluateServiceZones(
       };
     }
 
-    // Fallback: if no zone contains the point by distance, but the customer's
-    // city/state matches an active zone (e.g. zone has missing/old coords),
-    // allow the booking so a bad zone record never breaks live service.
-    const cityMatch = candidateZones(active, { cityName, state, areaName })[0];
-    if (cityMatch) {
-      return {
-        allowed: true,
-        configured: true,
-        zone: cityMatch,
-        nearest,
-        distanceMeters: nearest?.distanceMeters ?? null,
-        message: `We serve ${cityMatch.cityName || "your area"}.`,
-      };
-    }
-
     return {
       allowed: false,
       configured: true,

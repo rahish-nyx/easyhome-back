@@ -222,9 +222,11 @@ async function loadBootstrapPayload() {
  */
 publicRouter.get(
   "/bootstrap",
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     const now = Date.now();
+    const forceRefresh = Boolean(String(req.query.refresh || "").trim());
     const fresh =
+      !forceRefresh &&
       bootstrapCache !== null &&
       now - bootstrapCachedAt < BOOTSTRAP_CACHE_TTL_MS;
     let cacheState = fresh ? "HIT" : "MISS";
@@ -260,11 +262,13 @@ publicRouter.get(
 
     res.set(
       "Cache-Control",
-      "public, max-age=60, s-maxage=300, stale-while-revalidate=600",
+      forceRefresh
+        ? "private, no-store, max-age=0"
+        : "public, max-age=60, s-maxage=300, stale-while-revalidate=600",
     );
     res.set(
       "Vercel-CDN-Cache-Control",
-      "public, s-maxage=300, stale-while-revalidate=600",
+      forceRefresh ? "no-store" : "public, s-maxage=300, stale-while-revalidate=600",
     );
     res.set("X-Catalogue-Cache", cacheState);
     res.json(payload);

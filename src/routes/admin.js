@@ -11,7 +11,7 @@ import {
 import { privateCloudinaryDownloadUrl } from "../lib/media.js";
 import { updateJobFeedStatus } from "../lib/jobFeed.js";
 import { promoPaymentTotal } from "../lib/promos.js";
-import { emailLayout, notify, sendMail } from "../lib/notify.js";
+import { notify } from "../lib/notify.js";
 import { approveWorker, syncPublicWorker } from "../lib/workers.js";
 import {
   appSettings,
@@ -30,7 +30,6 @@ import {
   monthKey,
   toDate,
 } from "../lib/utils.js";
-import { env } from "../config/env.js";
 
 export const adminRouter = Router();
 adminRouter.use(requireAdmin);
@@ -256,16 +255,6 @@ adminRouter.patch(
         body: "Your EasyHome worker account is live. Go online to receive jobs.",
         type: "worker_approved",
         link: "/worker",
-      });
-      await sendMail({
-        to: worker.email,
-        subject: "You are approved on EasyHome",
-        html: emailLayout({
-          heading: "You are live on EasyHome 🎉",
-          intro: `Hi ${worker.name}, your ${worker.service} application was approved. Turn on “Online” in the app to start receiving jobs in ${worker.area}.`,
-          ctaText: "Open worker dashboard",
-          ctaUrl: `${env.publicWebUrl}/worker`,
-        }),
       });
     }
 

@@ -138,7 +138,7 @@ export function workerMatchesBooking(worker, booking, zone = null) {
 
   // Text matching is only a fallback for legacy records without coordinates.
   if (!target || !point) {
-    return textMatches(worker, booking);
+    return zone ? false : textMatches(worker, booking);
   }
 
   if (zone) {
@@ -163,7 +163,7 @@ export function workerMatchesLocation(worker, location, zone = null) {
   }
 
   if (!hasCoords(target) || !point) {
-    return textMatches(worker, location);
+    return zone ? false : textMatches(worker, location);
   }
 
   const radiusKm = matchRadiusKm(worker, zone);
