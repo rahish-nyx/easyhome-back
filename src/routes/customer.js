@@ -31,6 +31,11 @@ import {
 } from "../lib/matching.js";
 import { jobFeedDocId, updateJobFeedStatus } from "../lib/jobFeed.js";
 import { notify, notifyAdmins } from "../lib/notify.js";
+import {
+  calculatePromoDiscount,
+  findActivePromoByCode,
+  promoPaymentTotal,
+} from "../lib/promos.js";
 import { sendTelegramAlert, subscriptionTelegramMessage } from "../lib/telegram.js";
 import { OUT_OF_ZONE_MESSAGE, validateBookingZone } from "../lib/zones.js";
 import {
@@ -165,7 +170,19 @@ customerRouter.post(
       body.urgency === "urgent" && !customerPremium
         ? Math.round((baseBudget * urgentFeePct) / 100)
         : 0;
-    const estimatedTotal = baseBudget + urgentFee;
+    const promo = body.promoCode
+      ? await findActivePromoByCode(body.promoCode, service)
+      : null;
+    if (body.promoCode && !promo) {
+      throw new ApiError(
+        422,
+        "This promo code is no longer valid for this service. Remove it or choose another offer.",
+        "PROMO_INVALID",
+      );
+    }
+    const promoDiscount = promo ? calculatePromoDiscount(promo, baseBudget) : 0;
+    const originalTotal = baseBudget + urgentFee;
+    const estimatedTotal = Math.max(0, originalTotal - promoDiscount);
 
     const workersSnap = await collections.workers
       .where("serviceKey", "==", service.key)
@@ -258,6 +275,12 @@ customerRouter.post(
       urgency: body.urgency,
       urgentFee,
       urgentFeeWaived: body.urgency === "urgent" && customerPremium,
+      originalTotal,
+      promoCode: promo?.couponCode || "",
+      promoTitle: promo?.title || "",
+      promoDiscountType: promo?.discountType || "",
+      promoDiscountValue: Number(promo?.discountValue) || 0,
+      promoDiscount,
       estimatedTotal,
       customerPremium,
       customerPriority: customerPremium ? "pro" : "standard",
@@ -293,6 +316,8 @@ customerRouter.post(
       pricing: {
         basePrice: baseBudget,
         urgentFee,
+        promoDiscount,
+        originalTotal,
         estimatedTotal,
         workerPrice: null,
         customerOffer: null,
@@ -656,7 +681,15 @@ customerRouter.patch(
         booking.pricing?.finalPrice || booking.pricing?.workerPrice || booking.budget,
       );
       const urgentFee = Math.max(0, Math.round(Number(booking.urgentFee) || 0));
-      const paymentTotal = finalPrice + urgentFee;
+      const {
+        baseTotal,
+        promoDiscount,
+        paymentTotal,
+      } = promoPaymentTotal({
+        finalPrice,
+        urgentFee,
+        promoDiscount: booking.promoDiscount ?? booking.pricing?.promoDiscount,
+      });
       const premium = premiumActive(worker);
       const { commission, workerReceives: serviceEarnings } = commissionFor(
         finalPrice,
@@ -675,9 +708,13 @@ customerRouter.patch(
         status: "completed",
         "pricing.finalPrice": finalPrice,
         "pricing.urgentFee": urgentFee,
+        "pricing.baseTotal": baseTotal,
+        "pricing.promoCode": booking.promoCode || "",
+        "pricing.promoDiscount": promoDiscount,
         "pricing.paymentTotal": paymentTotal,
         "pricing.commission": commission,
         "pricing.workerReceives": workerReceives,
+        promoDiscount,
         updatedAt: FieldValue.serverTimestamp(),
       });
 

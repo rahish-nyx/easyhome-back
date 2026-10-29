@@ -207,6 +207,7 @@ export const bookingSchema = z.object({
   urgency: z.enum(["normal", "urgent"]).default("normal"),
   preferredWorkerId: z.string().max(80).optional().or(z.literal("")),
   addressLabel: z.string().trim().max(40).optional(),
+  promoCode: z.string().trim().max(24).optional().or(z.literal("")),
 });
 
 export const offerSchema = z.object({
@@ -309,6 +310,21 @@ export const promoSchema = z.object({
   order: z.coerce.number().int().min(0).max(99).default(0),
   startsAt: z.string().datetime().optional().or(z.literal("")),
   endsAt: z.string().datetime().optional().or(z.literal("")),
+  couponCode: z
+    .string()
+    .trim()
+    .max(24)
+    .regex(/^[A-Za-z0-9_-]*$/, "Coupon codes can use letters, numbers, hyphens and underscores.")
+    .transform((value) => value.toUpperCase())
+    .optional()
+    .default(""),
+  discountType: z.enum(["percentage", "flat"]).optional().or(z.literal("")).default(""),
+  discountValue: z.preprocess(
+    (value) => (value === "" || value === null || value === undefined ? 0 : value),
+    z.coerce.number().min(0).max(100000),
+  ),
+  targetFolderId: z.string().trim().max(120).optional().default(""),
+  targetServiceId: z.string().trim().max(120).optional().default(""),
 });
 
 export const footerLinkSchema = z.object({

@@ -17,6 +17,7 @@ import {
   validateBookingZone,
 } from "../lib/zones.js";
 import { waitlistSchema } from "../lib/validate.js";
+import { isPromoLive } from "../lib/promos.js";
 import { docToJson, docsToJson } from "../lib/utils.js";
 
 export const publicRouter = Router();
@@ -283,6 +284,22 @@ publicRouter.get(
     const folders = buildPublicFolders(docsToJson(foldersSnap), services);
     res.set("Cache-Control", "public, max-age=30, s-maxage=60, stale-while-revalidate=120");
     res.json({ folders });
+  }),
+);
+
+/**
+ * Coupon rules are checked live. The bootstrap payload is cached for several
+ * minutes for page speed, but an admin pausing or changing a discount must be
+ * reflected the moment a customer applies the code.
+ */
+publicRouter.get(
+  "/promos",
+  asyncHandler(async (_req, res) => {
+    const snap = await collections.promos.orderBy("order", "asc").get();
+    const now = Date.now();
+    const promos = docsToJson(snap).filter((promo) => isPromoLive(promo, now));
+    res.set("Cache-Control", "no-store, max-age=0");
+    res.json({ promos, fetchedAt: new Date().toISOString() });
   }),
 );
 

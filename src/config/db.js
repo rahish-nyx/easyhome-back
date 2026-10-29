@@ -266,7 +266,12 @@ register("Promo", "promos", {
   active: Boolean,
   startsAt: Date,
   endsAt: Date,
-}, [{ order: 1 }, { active: 1 }]);
+  couponCode: String,
+  discountType: String,
+  discountValue: Number,
+  targetFolderId: String,
+  targetServiceId: String,
+}, [{ order: 1 }, { active: 1 }, { couponCode: 1 }]);
 
 register("FooterLink", "footer_links", {
   label: String,

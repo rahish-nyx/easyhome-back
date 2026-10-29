@@ -10,6 +10,7 @@ import {
 } from "../lib/auth.js";
 import { privateCloudinaryDownloadUrl } from "../lib/media.js";
 import { updateJobFeedStatus } from "../lib/jobFeed.js";
+import { promoPaymentTotal } from "../lib/promos.js";
 import { emailLayout, notify, sendMail } from "../lib/notify.js";
 import { approveWorker, syncPublicWorker } from "../lib/workers.js";
 import {
@@ -446,7 +447,11 @@ adminRouter.patch(
       Number(booking.pricing?.finalPrice) || Number(booking.budget) || 0,
     );
     const urgentFee = Math.max(0, Math.round(Number(booking.urgentFee) || 0));
-    const paymentTotal = finalPrice + urgentFee;
+    const { baseTotal, promoDiscount, paymentTotal } = promoPaymentTotal({
+      finalPrice,
+      urgentFee,
+      promoDiscount: booking.promoDiscount ?? booking.pricing?.promoDiscount,
+    });
     const premium = premiumActive(worker);
     const { commission, workerReceives: serviceEarnings } = commissionFor(
       finalPrice,
@@ -463,9 +468,13 @@ adminRouter.patch(
       paymentMode: mode,
       "pricing.finalPrice": finalPrice,
       "pricing.urgentFee": urgentFee,
+      "pricing.baseTotal": baseTotal,
+      "pricing.promoCode": booking.promoCode || "",
+      "pricing.promoDiscount": promoDiscount,
       "pricing.paymentTotal": paymentTotal,
       "pricing.commission": commission,
       "pricing.workerReceives": workerReceives,
+      promoDiscount,
       updatedAt: FieldValue.serverTimestamp(),
     });
 

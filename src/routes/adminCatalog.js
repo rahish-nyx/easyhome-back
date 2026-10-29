@@ -36,6 +36,49 @@ function parseDate(value) {
   return Number.isNaN(date.getTime()) ? null : Timestamp.fromDate(date);
 }
 
+function validatePromoDiscount(body) {
+  const code = String(body.couponCode || "").trim();
+  const type = String(body.discountType || "");
+  const value = Number(body.discountValue) || 0;
+  if (!code && !type && !value) return;
+
+  if (!code) {
+    throw new ApiError(
+      422,
+      "Add a coupon code before setting a discount.",
+      "PROMO_CODE_REQUIRED",
+    );
+  }
+  if (body.placement === "worker_dashboard") {
+    throw new ApiError(
+      422,
+      "Coupon discounts can only be attached to customer promotions.",
+      "PROMO_CUSTOMER_ONLY",
+    );
+  }
+  if (type !== "percentage" && type !== "flat") {
+    throw new ApiError(
+      422,
+      "Choose a percentage or flat discount for this coupon.",
+      "PROMO_DISCOUNT_TYPE_REQUIRED",
+    );
+  }
+  if (value <= 0) {
+    throw new ApiError(
+      422,
+      "The discount value must be greater than zero.",
+      "PROMO_DISCOUNT_REQUIRED",
+    );
+  }
+  if (type === "percentage" && value > 100) {
+    throw new ApiError(
+      422,
+      "A percentage discount cannot exceed 100%.",
+      "PROMO_DISCOUNT_TOO_HIGH",
+    );
+  }
+}
+
 /* ------------------------------- SERVICES ------------------------------- */
 
 adminCatalogRouter.get(
@@ -189,6 +232,7 @@ adminCatalogRouter.post(
   upload.single("image"),
   asyncHandler(async (req, res) => {
     const body = promoSchema.parse(req.body || {});
+    validatePromoDiscount(body);
     let imagePath = body.imagePath || "";
     if (req.file) {
       imagePath = (
@@ -204,6 +248,7 @@ adminCatalogRouter.post(
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
+    invalidateBootstrapCache();
     res.status(201).json({ promo: docToJson(await ref.get()) });
   }),
 );
@@ -213,6 +258,7 @@ adminCatalogRouter.patch(
   upload.single("image"),
   asyncHandler(async (req, res) => {
     const updates = pickProvided(promoSchema, req.body);
+    validatePromoDiscount(updates);
     if (req.file) {
       updates.imagePath = (
         await uploadCloudinaryImage(req.file.buffer, { folder: "promos" })
@@ -227,6 +273,7 @@ adminCatalogRouter.patch(
       { ...updates, updatedAt: FieldValue.serverTimestamp() },
       { merge: true },
     );
+    invalidateBootstrapCache();
     res.json({ ok: true });
   }),
 );
@@ -235,6 +282,7 @@ adminCatalogRouter.delete(
   "/promos/:id",
   asyncHandler(async (req, res) => {
     await collections.promos.doc(req.params.id).delete();
+    invalidateBootstrapCache();
     res.json({ ok: true });
   }),
 );
