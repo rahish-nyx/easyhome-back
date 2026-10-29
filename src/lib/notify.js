@@ -1,7 +1,7 @@
 import nodemailer from "nodemailer";
-import { collections, db } from "../config/firebase.js";
+import { collections, db } from "../config/store.js";
 import { env } from "../config/env.js";
-import { FieldValue } from "./firestore.js";
+import { FieldValue } from "./values.js";
 
 /* ------------------- In-app notifications (MongoDB adapter) ------------------- */
 

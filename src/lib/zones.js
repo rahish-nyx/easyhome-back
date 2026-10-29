@@ -1,5 +1,5 @@
 import { getDistance } from "geolib";
-import { collections } from "../config/firebase.js";
+import { collections } from "../config/store.js";
 import { docsToJson } from "./utils.js";
 
 export const OUT_OF_ZONE_MESSAGE =
@@ -233,7 +233,7 @@ export async function allServiceZones() {
       zonesCachedAt = Date.now();
       return zones;
     } catch (error) {
-      // Keep dispatch alive during a transient Firestore outage/quota error.
+      // Keep dispatch alive during a transient database outage.
       if (zonesCache !== null) return zonesCache;
       throw error;
     } finally {

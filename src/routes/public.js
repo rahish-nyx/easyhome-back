@@ -1,7 +1,7 @@
-import { FieldValue } from "../lib/firestore.js";
+import { FieldValue } from "../lib/values.js";
 import { Router } from "express";
 import { isIP } from "node:net";
-import { collections } from "../config/firebase.js";
+import { collections } from "../config/store.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { appSettings, premiumActive } from "../lib/booking.js";
 import { nearestServiceArea } from "../lib/geo.js";
@@ -121,9 +121,33 @@ async function fetchReverseGeocode(url) {
   }
 }
 
+function buildPublicFolders(folders, services) {
+  return folders
+    .filter((folder) => folder.isLive !== false && folder.active !== false)
+    .map((folder) => {
+      const id = String(folder._id ?? folder.id ?? "");
+      const name = String(folder.name || "");
+      const aliases = [...new Set([id, name].filter(Boolean))];
+      const folderServices = services.filter((service) => {
+        const folderId = String(service.folderId || "");
+        const legacyFolder = String(service.folder || "");
+        return aliases.includes(folderId) || aliases.includes(legacyFolder);
+      });
+      return {
+        ...folder,
+        id,
+        name,
+        servicesCount: folderServices.length,
+        serviceKeys: folderServices.map((service) => service.key).filter(Boolean),
+      };
+    })
+    .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
+}
+
 async function loadBootstrapPayload() {
-  const [servicesSnap, citiesSnap, zones, promosSnap, footerLinksSnap, settings] = await Promise.all([
+  const [servicesSnap, foldersSnap, citiesSnap, zones, promosSnap, footerLinksSnap, settings] = await Promise.all([
     collections.services.orderBy("order", "asc").get(),
+    collections.serviceFolders.orderBy("order", "asc").get(),
     collections.cities.orderBy("name", "asc").get(),
     allServiceZones(),
     collections.promos.orderBy("order", "asc").get(),
@@ -135,6 +159,7 @@ async function loadBootstrapPayload() {
   const services = docsToJson(servicesSnap).filter(
     (service) => service.active !== false,
   );
+  const folders = buildPublicFolders(docsToJson(foldersSnap), services);
   const cities = docsToJson(citiesSnap).filter((city) => city.active !== false);
   const promos = docsToJson(promosSnap).filter((promo) => {
     if (promo.active === false) return false;
@@ -153,6 +178,7 @@ async function loadBootstrapPayload() {
 
   return {
     services,
+    folders,
     cities,
     zones,
     promos,
@@ -169,7 +195,7 @@ async function loadBootstrapPayload() {
  *
  * The catalogue changes rarely but is needed by every page. Caching it in
  * function memory for 15 minutes (and at the edge for 5) keeps a burst of
- * visitors from turning into one Firestore read per page view. If a refresh
+ * visitors from turning into one MongoDB query per page view. If a refresh
  * fails, the previous payload is still served so the shell stays usable.
  */
 publicRouter.get(
@@ -212,6 +238,22 @@ publicRouter.get(
     );
     res.set("X-Catalogue-Cache", cacheState);
     res.json(bootstrapCache);
+  }),
+);
+
+publicRouter.get(
+  "/folders",
+  asyncHandler(async (_req, res) => {
+    const [foldersSnap, servicesSnap] = await Promise.all([
+      collections.serviceFolders.orderBy("order", "asc").get(),
+      collections.services.get(),
+    ]);
+    const services = docsToJson(servicesSnap).filter(
+      (service) => service.active !== false,
+    );
+    const folders = buildPublicFolders(docsToJson(foldersSnap), services);
+    res.set("Cache-Control", "public, max-age=30, s-maxage=60, stale-while-revalidate=120");
+    res.json({ folders });
   }),
 );
 
@@ -703,7 +745,7 @@ publicRouter.get(
     res.json({
       ok: true,
       service: "easyhome-api",
-      firestore: true,
+      database: "mongodb",
       settings: snap.exists,
       time: new Date().toISOString(),
     });

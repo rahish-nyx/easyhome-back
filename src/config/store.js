@@ -6,7 +6,7 @@ import {
   Timestamp,
   isFieldValue,
   isPlainObject,
-} from "../lib/firestore.js";
+} from "../lib/values.js";
 
 const INTERNAL_KEYS = new Set(["_id", "_parentId", "__v"]);
 
@@ -632,6 +632,7 @@ export const collections = {
   notifications: db.collection("notifications"),
   reviews: db.collection("reviews"),
   services: db.collection("services"),
+  serviceFolders: db.collection("serviceFolders"),
   cities: db.collection("cities"),
   serviceZones: db.collection("service_zones"),
   serviceWaitlist: db.collection("service_waitlist"),

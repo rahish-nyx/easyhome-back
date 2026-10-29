@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { collections, db } from "../config/firebase.js";
+import { collections, db } from "../config/store.js";
 
 export function jobFeedDocId(bookingId, workerId) {
   return createHash("sha256")

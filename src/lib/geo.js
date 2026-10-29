@@ -37,7 +37,7 @@ export function hasCoords(value) {
 
 /**
  * Returns the nearest active service city for a coordinate.
- * `cities` are Firestore city documents: { name, lat, lng, radiusKm, active }.
+ * `cities` are MongoDB city documents: { name, lat, lng, radiusKm, active }.
  */
 export function nearestServiceArea(cities, lat, lng) {
   if (!hasCoords({ lat, lng })) {

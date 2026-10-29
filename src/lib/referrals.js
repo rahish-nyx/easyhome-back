@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
-import { FieldValue } from "./firestore.js";
-import { collections } from "../config/firebase.js";
+import { FieldValue } from "./values.js";
+import { collections } from "../config/store.js";
 import { notify, notifyAdmins } from "./notify.js";
 
 export const REFERRAL_REWARD = 51;

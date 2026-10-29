@@ -4,8 +4,8 @@
  *
  * Usage: node scripts/backfill-service-copy.js
  */
-import { collections, db } from "../src/config/firebase.js";
-import { FieldValue } from "firebase-admin/firestore";
+import { collections, db } from "../src/config/store.js";
+import { FieldValue } from "../src/lib/values.js";
 import {
   SERVICE_DESCRIPTION_FIXES,
   SERVICE_SUBHEADINGS,

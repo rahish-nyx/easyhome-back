@@ -1,7 +1,7 @@
-import { collections } from "../config/firebase.js";
+import { collections } from "../config/store.js";
 import { premiumActive } from "./booking.js";
 import { docToJson } from "./utils.js";
-import { FieldValue } from "./firestore.js";
+import { FieldValue } from "./values.js";
 
 function coordinate(value) {
   if (value === null || value === undefined || value === "") return null;

@@ -4,9 +4,10 @@ import mongoose from "mongoose";
 /**
  * MongoDB Atlas is the single source of truth for EasyHome.
  *
- * The application talks to MongoDB through the small Firestore-compatible
- * layer in `config/firebase.js`. Keeping the connection here means the rest of
- * the codebase never needs to know whether it runs locally or on Vercel.
+ * The application stores every document in MongoDB through the small
+ * store adapter in `config/store.js`. Keeping the connection here means the
+ * rest of the codebase never needs to know whether it runs locally or on
+ * Vercel.
  */
 const uri = process.env.MONGODB_URI || "";
 let connectionPromise = null;
@@ -225,7 +226,7 @@ register("ServiceFolder", "serviceFolders", {
   isLive: { type: Boolean, default: true },
   order: { type: Number, default: 0 },
   createdAt: Date,
-}, [{ name: 1 }, { isLive: 1 }, { order: 1 }]);
+}, [{ isLive: 1 }, { order: 1 }]);
 
 register("City", "cities", {
   name: String,
@@ -374,7 +375,7 @@ register("Audit", "audit", {
 }, [{ createdAt: -1 }, { actorId: 1 }]);
 
 // Subcollections are stored in a flattened collection and linked with
-// `_parentId`. This deliberately mirrors the Firestore API used by the app.
+// `_parentId`, which keeps document paths simple without nested arrays.
 const SUBCOLLECTIONS = {
   "chatThreads.messages": "chatThreads__messages",
   "bookings.private": "bookings__private",

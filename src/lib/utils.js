@@ -1,5 +1,5 @@
 /**
- * Convert Firestore documents/Timestamps into JSON-safe values for API responses.
+ * Convert MongoDB documents/Dates into JSON-safe values for API responses.
  */
 export function serialize(value) {
   if (value === null || value === undefined) return value;

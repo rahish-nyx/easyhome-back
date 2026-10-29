@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { FieldValue, Timestamp } from "../lib/firestore.js";
-import { collections, db } from "../config/firebase.js";
+import { FieldValue, Timestamp } from "../lib/values.js";
+import { collections, db } from "../config/store.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { requireAdmin } from "../middleware/auth.js";
 import {

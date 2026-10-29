@@ -1,4 +1,4 @@
-import { collections } from "../config/firebase.js";
+import { collections } from "../config/store.js";
 import { env } from "../config/env.js";
 import { ApiError } from "../middleware/errors.js";
 import { toDate } from "./utils.js";

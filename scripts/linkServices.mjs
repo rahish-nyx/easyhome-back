@@ -1,20 +1,108 @@
-import { connectDb } from '../src/config/db.js';
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
+import { connectDb, getModel } from "../src/config/db.js";
+import { FOLDER_NAMES, serviceGroup } from "../src/data/serviceGroups.js";
+
 await connectDb();
-const Folder = mongoose.model('ServiceFolder');
-const Service = mongoose.model('Service');
-const GROUP_MAP = { cleaning: "Cleaning", "deep-cleaning": "Cleaning", "bathroom-cleaning": "Cleaning", "kitchen-cleaning": "Cleaning", "sofa-cleaning": "Cleaning", "carpet-cleaning": "Cleaning", "window-cleaning": "Cleaning", "office-cleaning": "Cleaning", "move-in-cleaning": "Cleaning", disinfection: "Cleaning", plumbing: "Plumbing", "tap-repair": "Plumbing", "toilet-repair": "Plumbing", "water-tank-cleaning": "Plumbing", "pipeline-repair": "Plumbing", "water-purifier": "Plumbing", drainage: "Plumbing", "borewell-repair": "Plumbing", electrical: "Electrical", wiring: "Electrical", "fan-install": "Electrical", "light-install": "Electrical", inverter: "Electrical", switchboard: "Electrical", appliance: "Appliance Repair", "ac-repair": "Appliance Repair", "fridge-repair": "Appliance Repair", "washing-machine-repair": "Appliance Repair", "microwave-repair": "Appliance Repair", "geyser-repair": "Appliance Repair", "tv-repair": "Appliance Repair", "chimney-cleaning": "Appliance Repair", beauty: "Beauty & Wellness", salon: "Beauty & Wellness", haircut: "Beauty & Wellness", "beard-grooming": "Beauty & Wellness", facial: "Beauty & Wellness", waxing: "Beauty & Wellness", massage: "Beauty & Wellness", "bridal-makeup": "Beauty & Wellness", mehndi: "Beauty & Wellness", tutoring: "Tutoring", "maths-tutor": "Tutoring", "science-tutor": "Tutoring", "english-tutor": "Tutoring", "music-teacher": "Tutoring", "dance-teacher": "Tutoring", "fitness-trainer": "Tutoring", "yoga-trainer": "Tutoring", childcare: "Child & Elder Care", nanny: "Child & Elder Care", "elder-care": "Child & Elder Care", "patient-care": "Child & Elder Care", nursing: "Child & Elder Care", physiotherapy: "Child & Elder Care", pet: "Pet Care", "dog-grooming": "Pet Care", "pet-sitting": "Pet Care", "pet-training": "Pet Care", veterinary: "Pet Care", gardening: "Garden & Landscaping", "lawn-mowing": "Garden & Landscaping", "tree-trimming": "Garden & Landscaping", "plant-care": "Garden & Landscaping", landscaping: "Garden & Landscaping", car: "Vehicle Services", "car-wash": "Vehicle Services", "bike-wash": "Vehicle Services", "car-detailing": "Vehicle Services", "puncture-repair": "Vehicle Services", "battery-jumpstart": "Vehicle Services", towing: "Vehicle Services", driver: "Vehicle Services", taxi: "Vehicle Services", event: "Events & Catering", catering: "Events & Catering", cook: "Events & Catering", "party-catering": "Events & Catering", bartender: "Events & Catering", waiter: "Events & Catering", "event-photography": "Events & Catering", videography: "Events & Catering", dj: "Events & Catering", "tent-house": "Events & Catering", decoration: "Events & Catering", "wedding-planner": "Events & Catering", repair: "Repair & Construction", painting: "Repair & Construction", "wall-painting": "Repair & Construction", waterproofing: "Repair & Construction", "texture-painting": "Repair & Construction", "wood-polishing": "Repair & Construction", "pest-control": "Repair & Construction", "termite-control": "Repair & Construction", "mosquito-control": "Repair & Construction", "rodent-control": "Repair & Construction", carpentry: "Repair & Construction", "door-repair": "Repair & Construction", "furniture-assembly": "Repair & Construction", "modular-kitchen": "Repair & Construction", wardrobe: "Repair & Construction", "bed-repair": "Repair & Construction", business: "Business & Security", "security-guard": "Business & Security", bouncer: "Business & Security", housekeeping: "Business & Security", maid: "Business & Security", laundry: "Home Services", ironing: "Home Services", tailoring: "Home Services", alterations: "Home Services", embroidery: "Home Services" };
-function serviceGroup(key) { return GROUP_MAP[key] || "Other"; }
-const services = await Service.find().lean();
-let linked = 0;
-for (const s of services) {
-  const g = serviceGroup(s.key || s.id);
-  if (!g || g === "Other") continue;
-  const folder = await Folder.findOne({ name: g });
-  if (folder) {
-    await Service.updateOne({ _id: s._id }, { $set: { folderId: folder._id.toString() } });
-    linked++;
+
+const Service = getModel("services");
+const Folder = getModel("serviceFolders");
+
+const descriptions = {
+  Cleaning: "Deep cleaning, kitchen, bathroom, sofa and move-in cleaning.",
+  Plumbing: "Taps, toilets, drainage, water tanks and pipeline repairs.",
+  Electrical: "Wiring, switches, fans, lights and inverter installation.",
+  "Construction & Interiors": "Masonry, tiling, false ceilings, interiors and structural work.",
+  "Appliance Repair": "AC, fridge, washing machine, microwave and TV repair.",
+  "Repair & Construction": "Painting, carpentry, pest control and waterproofing.",
+  "Beauty & Wellness": "Salon at home, haircuts, facials, massage and makeup.",
+  Tutoring: "Maths, science, languages, music and fitness coaching.",
+  "Child & Elder Care": "Nannies, elder care, nursing and physiotherapy.",
+  "Pet Care": "Grooming, sitting, training and veterinary support.",
+  "Garden & Landscaping": "Lawn mowing, tree trimming and plant care.",
+  "Vehicle Services": "Car and bike wash, detailing, towing and drivers.",
+  "Events & Catering": "Cooks, catering, photography, decor and planners.",
+  "Business & Security": "Security guards, housekeeping and office staffing.",
+  "Home Services": "Laundry, ironing, tailoring and everyday home help.",
+};
+
+const icons = {
+  Cleaning: "sparkles",
+  Plumbing: "droplets",
+  Electrical: "zap",
+  "Construction & Interiors": "hard-hat",
+  "Appliance Repair": "wrench",
+  "Repair & Construction": "hammer",
+  "Beauty & Wellness": "scissors",
+  Tutoring: "graduation-cap",
+  "Child & Elder Care": "heart-handshake",
+  "Pet Care": "paw-print",
+  "Garden & Landscaping": "trees",
+  "Vehicle Services": "car",
+  "Events & Catering": "party-popper",
+  "Business & Security": "shield-check",
+  "Home Services": "home",
+};
+
+for (const [index, name] of FOLDER_NAMES.entries()) {
+  const existing = await Folder.findById(name);
+  if (!existing) {
+    await Folder.create({
+      _id: name,
+      name,
+      description: descriptions[name] || "",
+      icon: icons[name] || "layers",
+      isLive: true,
+      order: index,
+      createdAt: new Date(),
+    });
+    console.log("Created folder:", name);
+  } else {
+    await Folder.updateOne(
+      { _id: name },
+      {
+        $set: {
+          description: existing.description || descriptions[name] || "",
+          icon: existing.icon || icons[name] || "layers",
+          order: index,
+        },
+      },
+    );
   }
 }
-console.log("Linked", linked, "of", services.length);
+
+const services = await Service.find().lean();
+let linked = 0;
+
+for (const service of services) {
+  const folderName = serviceGroup(service.key || service.id);
+  const folder = await Folder.findById(folderName);
+  if (!folder) continue;
+  await Service.updateOne(
+    { _id: service._id },
+    {
+      $set: {
+        folderId: folder._id.toString(),
+        folder: folder.name,
+        updatedAt: new Date(),
+      },
+    },
+  );
+  linked += 1;
+}
+
+const counts = await Promise.all(
+  FOLDER_NAMES.map(async (name) => {
+    const folder = await Folder.findById(name).lean();
+    const count = folder
+      ? await Service.countDocuments({
+          $or: [{ folderId: folder._id.toString() }, { folder: folder.name }],
+        })
+      : 0;
+    return `${name}: ${count}`;
+  }),
+);
+
+console.log(`Linked ${linked} of ${services.length} services to folders.`);
+console.log(counts.join("\n"));
+
 await mongoose.disconnect();

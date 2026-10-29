@@ -1,16 +1,16 @@
 # EasyHome API
 
-Thin Express 5 service that owns every privileged EasyHome write. The web app reads Firestore directly with realtime listeners; this API verifies Firebase ID tokens, applies role checks, runs transactions, uploads media, and writes audit/notification records with the Firebase Admin SDK.
-
-> The previous MongoDB/Mongoose backend and Socket.IO transport have been removed. Realtime updates are delivered by Firestore `onSnapshot`.
+Express 5 service that owns every EasyHome read and write. The API stores data in MongoDB (Mongoose), authenticates with JWT, applies role checks, runs atomic updates, uploads media, and writes audit/notification records. The frontend never talks to the database directly.
 
 ## Stack
 
-- Node.js 20+
+- Node.js 22+ (Node 24 LTS recommended)
 - Express 5
-- Firebase Admin SDK (Auth, Firestore)
+- MongoDB Atlas + Mongoose
+- JWT access/refresh tokens, bcrypt password hashing
 - Zod validation, Helmet, CORS, rate limiting, compression, Multer
 - Resend for optional transactional email
+- Cloudinary for public images and private KYC documents
 
 ## Setup
 
@@ -19,47 +19,32 @@ npm install
 cp .env.example .env   # Windows: copy .env.example .env
 ```
 
-Set Firebase Admin credentials in `.env` using one of:
+Required environment:
 
-1. `GOOGLE_APPLICATION_CREDENTIALS=./serviceAccount.json` (recommended locally), or
-2. `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`, or
-3. `FIREBASE_SERVICE_ACCOUNT_JSON` with the full JSON.
-
-Never commit `.env` or the service-account key. Both are gitignored.
-
-### Required Firebase project setup
-
-The current project is `easyhome-bec14` (Firestore region `asia-south1`).
-
-1. Enable Firebase Authentication and Cloud Firestore for the Google Cloud project.
-2. **Authentication** -> enable **Email/Password** and **Google**.
-3. Configure Cloudinary credentials in `backend/.env` for image uploads.
-4. Deploy the Firestore rules and indexes:
-
-```bash
-npx firebase-tools login
-npx firebase-tools deploy --only firestore:rules,firestore:indexes
+```env
+MONGODB_URI=mongodb+srv://...
+JWT_SECRET=replace-with-a-long-random-string
 ```
 
-5. Build the frontend, then deploy hosting:
+Optional: `JWT_EXPIRES_IN`, `JWT_REFRESH_DAYS`, `GOOGLE_CLIENT_ID`, Cloudinary keys, Resend, Razorpay and Telegram.
 
-```bash
-cd ../easyhomes && npm run build
-cd ../backend
-npx firebase-tools deploy --only hosting
-```
-
-Hosting publishes `../easyhomes/dist`, rewrites SPA routes to `index.html`, marks hashed assets immutable, and sets security headers.
+Never commit `.env`. It is gitignored.
 
 ### Seed the first admin
-
-After Authentication is enabled:
 
 ```bash
 npm run seed
 ```
 
-The seed writes the service catalogue, cities, sample promos, `settings/app`, and the admin account named by `ADMIN_EMAIL`. Set a unique `ADMIN_PASSWORD` of at least 12 characters in `.env` **before** running it in production; the seed skips the admin account when the password is missing or too short. The seed is idempotent for catalogue documents and does not overwrite an existing admin password.
+The seed writes the service catalogue, cities, sample promos, `settings` and the admin account named by `ADMIN_EMAIL`. Set a unique `ADMIN_PASSWORD` of at least 12 characters in `.env` **before** running it in production; the seed skips the admin account when the password is missing or too short. The seed is idempotent and does not overwrite an existing admin password.
+
+### Link services into folders
+
+```bash
+node scripts/linkServices.mjs
+```
+
+Creates the 15 customer-facing folders and assigns all 181 services to their folder. It is idempotent and prints per-folder counts. Services are grouped by `backend/src/data/serviceGroups.js`, which mirrors the frontend mapping. Unmapped services fall into `Other` (currently zero).
 
 ## Run
 
@@ -69,34 +54,25 @@ npm start       # production process
 npm run check   # syntax-check every source file
 ```
 
-Health check: `GET /health` -> `{ ok: true, service: "easyhome-api", version: 2 }`.
+Health check: `GET /api/public/health` -> `{ ok: true, service: "easyhome-api", database: "mongodb" }`.
 
 ### Deploy the API to Vercel
 
-Create a separate Vercel project for this repository and set its Root Directory
-to `backend` (or the repository root when this repository is connected directly).
-The `api/index.js` entry exports the Express app as a serverless function, and
-`vercel.json` routes API requests to it. Set the required Firebase Admin,
-Cloudinary, CORS, email, payment and Telegram environment variables in Vercel;
-never commit production secrets. Set `NODE_ENV=production`, and include the
-deployed frontend origin in `CORS_ORIGINS`.
+Create a separate Vercel project for this repository and set its Root Directory to `backend`. The `api/index.js` entry exports the Express app as a serverless function, and `vercel.json` routes API requests to it. Set `MONGODB_URI`, `JWT_SECRET`, Cloudinary, CORS, email, payment and Telegram environment variables in Vercel; never commit production secrets. Set `NODE_ENV=production`, and include the deployed frontend origin in `CORS_ORIGINS`.
 
-Vercel functions are ephemeral and may run concurrently. The local tracking
-watchdog started by `src/index.js` does not run in the Vercel function; use a
-scheduled Vercel Cron invocation or an external scheduler for any periodic
-tracking/accountability checks. In-memory rate limits are also per function
-instance rather than globally shared.
+Vercel functions are ephemeral and may run concurrently. The local tracking watchdog started by `src/index.js` does not run in the Vercel function; use a scheduled Vercel Cron invocation or an external scheduler for periodic tracking/accountability checks. In-memory rate limits are also per function instance rather than globally shared.
 
 ## Environment highlights
 
 | Variable | Purpose |
 | --- | --- |
 | `PORT` | API port (default `5000`) |
+| `MONGODB_URI` | MongoDB Atlas connection string |
+| `JWT_SECRET` | Signing key for access tokens |
 | `CORS_ORIGINS` | Comma-separated allowed web origins |
 | `PUBLIC_WEB_URL` | Links used in emails and notifications |
-| `FIREBASE_*` / `GOOGLE_APPLICATION_CREDENTIALS` | Admin credentials |
+| `GOOGLE_CLIENT_ID` | Google sign-in audience |
 | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Image uploads and private KYC documents |
-| `CLOUDINARY_URL` | Alternative Cloudinary credential format |
 | `RESEND_API_KEY`, `MAIL_FROM` | Optional transactional email |
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME` | First admin seed |
 | `DEFAULT_COMMISSION_PCT`, `DEFAULT_SUBSCRIPTION_PRICE` | Business defaults |
@@ -105,41 +81,43 @@ instance rather than globally shared.
 | `RAZORPAY_WEBHOOK_SECRET` | HMAC secret for `/api/payment/webhook` |
 | `TELEGRAM_BOT_TOKEN`, `ADMIN_TELEGRAM_CHAT_ID` | Optional admin payment alerts |
 
-`FIRESTORE_EMULATOR_HOST` and `FIREBASE_AUTH_EMULATOR_HOST` switch the API to the emulator suite without a service account.
-
 ## Security model
 
-- Firestore rules deny all client writes.
-- Reads are scoped: public catalogue; owner/admin profiles; booking participants only; admin-only KYC.
-- Privileged routes verify the Firebase ID token and custom claims (`role`, `workerApproved`, `admin`), with `admins/{uid}` as an additional admin check.
-- Phone numbers live in `bookings/{id}/private/contact`, never in public booking documents.
+- Every request is scoped by role: public catalogue, owner/admin profiles, booking participants only, admin-only KYC.
+- Privileged routes verify the JWT and its claims (`role`, `workerApproved`, `admin`), with an `admins` collection as an additional admin check.
+- Passwords are hashed with bcrypt (cost 12). Refresh tokens are hashed before storage.
+- Phone numbers live in private booking contact fields and are never returned in public booking documents.
 - `workersPublic` contains only safe directory fields (no phone, email, UPI or KYC).
 - KYC files are stored as private Cloudinary assets and exposed by a short-lived URL issued through an admin-authenticated route.
 - Job-feed entries and in-app job notifications are created only for approved, online workers matching the booking's service, exact city/state/locality and active-zone radius; Pro workers are notified first.
-- Worker job acceptance rechecks the active zone and worker radius in a Firestore transaction, in addition to price negotiation, completion and fee settlement.
+- Worker job acceptance rechecks the active zone and worker radius in an atomic update, in addition to price negotiation, completion and fee settlement.
 - A booking with `preferredWorkerId` is reserved for that worker in the API, not just hidden in the UI.
 - Rate limits apply globally, and more tightly to auth endpoints.
 
 ## Data model
 
+MongoDB collections (Mongoose models are registered in `src/config/db.js`):
+
 | Collection | Purpose |
 | --- | --- |
-| `users/{uid}` | Customer/admin profile, role, premium state |
-| `workers/{uid}` | Private worker profile, trades, availability, earnings, Cloudinary KYC identifiers |
-| `workersPublic/{uid}` | Safe public worker directory |
-| `services/{id}`, `cities/{id}`, `promos/{id}` | Admin-managed catalogue |
-| `bookings/{id}` | Booking lifecycle, pricing, assignment, status |
-| `bookings/{id}/private/contact` | Phone and private contact details |
-| `jobFeed/{feedId}` | Open-job feed entries scoped to individual eligible workers |
-| `urgentPublic/{bookingId}` | Sanitised urgent jobs for the storefront |
-| `subscriptions/{id}` | Razorpay membership orders and activated plans |
-| `commissions/{id}` | Worker fee dues and Razorpay settlements (legacy collection name) |
-| `payments/{paymentId}` | Verified Razorpay payment audit records |
-| `reviews/{id}` | Ratings and customer feedback |
-| `chats/{uid}/messages/{id}` | Customer/admin support thread |
-| `notifications/{id}` | In-app notifications |
-| `settings/app` | Fees, pricing, maintenance and announcements |
-| `admins/{uid}` | Admin membership document |
+| `users` | Customer/admin profile, role, premium state, password hash |
+| `workers` | Private worker profile, trades, availability, earnings, Cloudinary KYC identifiers |
+| `workersPublic` | Safe public worker directory |
+| `services` | Admin-managed catalogue; each service has a `folderId` |
+| `serviceFolders` | The 15 customer-facing folders (`_id` is the folder name) |
+| `cities`, `promos`, `footerLinks` | Admin-managed catalogue content |
+| `bookings` | Booking lifecycle, pricing, assignment, status |
+| `jobFeed` | Open-job feed entries scoped to individual eligible workers |
+| `urgentPublic` | Sanitised urgent jobs for the storefront |
+| `subscriptions` | Razorpay membership orders and activated plans |
+| `commissions` | Worker fee dues and Razorpay settlements |
+| `payments` | Verified Razorpay payment audit records |
+| `reviews` | Ratings and customer feedback |
+| `chats` | Customer/admin support threads and messages |
+| `notifications` | In-app notifications |
+| `settings` | Fees, pricing, maintenance and announcements |
+| `admins` | Admin membership documents |
+| `audit` | Admin action log |
 
 ## API surface
 
@@ -150,22 +128,25 @@ All routes are prefixed by `/api`.
 | Method | Path |
 | --- | --- |
 | GET | `/public/bootstrap` |
+| GET | `/public/folders` |
 | GET | `/public/service-area` |
 | GET | `/public/workers`, `/public/workers/:id` |
 | GET | `/public/urgent`, `/public/stats` |
 | GET | `/public/health`, `/public/ping` |
 
-`/public/bootstrap` returns services, cities, active promos and settings in one round trip and avoids composite-index dependencies for the small catalogue collections.
+`/public/bootstrap` returns services, live folders (with `servicesCount` and `serviceKeys`), cities, active promos and settings in one round trip.
 
 ### Auth and profile
 
 | Method | Path |
 | --- | --- |
-| POST | `/auth/session` |
+| POST | `/auth/register`, `/auth/login`, `/auth/google` |
+| POST | `/auth/refresh`, `/auth/logout` |
 | GET/PATCH | `/auth/me` |
 | POST | `/auth/avatar` |
 | POST | `/auth/worker/apply` |
 | GET | `/auth/worker/status` |
+| POST | `/auth/verify-email`, `/auth/forgot-password`, `/auth/reset-password` |
 
 ### Customer
 
@@ -210,12 +191,13 @@ All routes are prefixed by `/api`.
 | Chat | `GET /admin/chats`, `GET/POST /admin/chats/:uid` |
 | Admins | `GET/POST /admin/admins`, `DELETE /admin/admins/:id` |
 | Catalogue | CRUD under `/admin/services`, `/admin/cities`, `/admin/promos` |
+| Folders | `GET/POST /admin/folders`, `PUT/DELETE /admin/folders/:id`, `PATCH /admin/folders/:id/toggle`, `GET/POST /admin/folders/:id/services` |
 | Settings | `GET/PATCH /admin/settings`, `POST /admin/settings/announcement` |
 | Money | `/admin/subscriptions*`, `/admin/commissions*`, `GET /admin/revenue`, `POST /admin/maintenance/expire-premium` |
 
 ## Media
 
-- Public images and private KYC documents are stored in Cloudinary. Firebase is used only for Authentication and Firestore.
+- Public images and private KYC documents are stored in Cloudinary.
 - Uploads require Cloudinary credentials; there is no alternate bucket or local-file fallback.
 - Uploads are size/type limited by Multer and validated server-side.
 
@@ -229,23 +211,22 @@ All routes are prefixed by `/api`.
 
 ## Deploy checklist
 
-1. Enable Authentication and Firestore in the Firebase console, and configure Cloudinary credentials on the API.
-2. Set a strong `ADMIN_PASSWORD`, then run `npm run seed`.
-3. Deploy this Express API to a Node host (Render, Railway, Fly.io, Cloud Run) or wrap it as a Firebase Cloud Function with an `/api/**` Hosting rewrite. Firebase Hosting alone cannot run Express.
-4. Add the Hosting origin to `CORS_ORIGINS`, and set `VITE_API_URL` in the frontend build to the API base **including `/api`**.
-5. `npx firebase-tools login`.
-6. Deploy rules and indexes: `npx firebase-tools deploy --only firestore:rules,firestore:indexes`.
-7. Build the frontend, then deploy hosting.
-8. Smoke test `/health`, `/api/public/bootstrap`, sign-in, booking creation, worker approval and admin dashboard.
+1. Create a MongoDB Atlas cluster and add its connection string as `MONGODB_URI`. Set a strong `JWT_SECRET`.
+2. Configure Cloudinary credentials on the API.
+3. Set a strong `ADMIN_PASSWORD`, then run `npm run seed` and `node scripts/linkServices.mjs`.
+4. Deploy this Express API to a Node host (Vercel, Render, Railway, Fly.io, Cloud Run).
+5. Add the frontend origin to `CORS_ORIGINS`, and set `VITE_API_URL` in the frontend build to the API base **including `/api`**.
+6. Build the frontend and deploy `dist/` to any static host.
+7. Smoke test `/api/public/health`, `/api/public/bootstrap`, sign-in, booking creation, worker approval and the admin folder flow.
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 | --- | --- |
-| `CONFIGURATION_NOT_FOUND` on sign-in | Authentication is not enabled, or billing is not linked for Identity Platform. |
-| `BILLING_NOT_ENABLED` | Link a billing account to the Google Cloud project. |
+| Startup exits with `MONGODB_URI is missing` | Add `MONGODB_URI` to `.env`. |
+| `MongooseServerSelectionError` | The Atlas IP allowlist or connection string is wrong. |
+| Sign-in returns `401` after a restart | `JWT_SECRET` changed; sign in again. |
+| Cache hits on stale folder data | Folder changes invalidate `/public/folders` after 30 s (`s-maxage=60`). |
+| Folder counts show zero | Run `node scripts/linkServices.mjs`; services need `folderId`. |
 | Cloudinary upload failure | Verify the Cloudinary credentials and API network access. |
-| `firebaserules.releases.create` denied | The service account cannot deploy rules. Use `npx firebase-tools login` with an owner account, or grant Firebase Rules Admin. |
-| `query requires an index` | Deploy `firestore.indexes.json` with the Firebase CLI. |
-| Public catalogue is empty | Firestore rules are still deny-all; deploy them. |
-| Admin route redirects | The signed-in account needs the `admin` custom claim and `admins/{uid}`. |
+| Admin route redirects | The signed-in account needs the `admin` claim and an `admins` record. |

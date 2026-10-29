@@ -6,9 +6,9 @@
  * Usage: npm run seed
  */
 import { connectDb } from "../src/config/db.js";
-import { collections } from "../src/config/firebase.js";
+import { collections } from "../src/config/store.js";
 import { env } from "../src/config/env.js";
-import { FieldValue } from "../src/lib/firestore.js";
+import { FieldValue } from "../src/lib/values.js";
 import { hashPassword, normalizeEmail } from "../src/lib/auth.js";
 import { DEFAULT_SERVICES } from "../src/data/catalogue.js";
 import { SERVICE_SUBHEADINGS } from "./serviceSubheadings.js";

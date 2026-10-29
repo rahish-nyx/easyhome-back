@@ -1,4 +1,4 @@
-import { collections } from "../config/firebase.js";
+import { collections } from "../config/store.js";
 import { verifyToken } from "../lib/auth.js";
 import { ApiError } from "./errors.js";
 

@@ -1,9 +1,9 @@
 /**
- * Small Firestore-compatible primitives used by the MongoDB adapter.
+ * Small date/increment primitives used by the MongoDB adapter.
  *
- * The route layer was originally written against Firestore. Keeping the same
- * Timestamp/FieldValue API means the business logic (pricing, referrals,
- * commissions, chat, dispatch) stays unchanged while storage moves to MongoDB.
+ * Keeping a small Timestamp/FieldValue API means the business logic (pricing,
+ * referrals, commissions, chat, dispatch) stays independent of the storage
+ * driver and continues to run on MongoDB.
  */
 export class Timestamp {
   constructor(seconds, nanoseconds = 0) {

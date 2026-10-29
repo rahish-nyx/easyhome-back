@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { FieldValue, Timestamp } from "../lib/firestore.js";
-import { collections, db } from "../config/firebase.js";
+import { FieldValue, Timestamp } from "../lib/values.js";
+import { collections, db } from "../config/store.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { upload } from "../middleware/upload.js";
@@ -369,58 +369,7 @@ adminCatalogRouter.post(
   }),
 );
 
-/* ------------------------------- FOLDERS ------------------------------- */
-
-adminCatalogRouter.get(
-  "/folders/:id",
-  asyncHandler(async (req, res) => {
-    const folderName = req.params.id;
-    const snap = await collections.services.where("folder", "==", folderName).get();
-    res.json({ folder: { id: folderName, name: folderName, active: snap.empty ? true : (snap.docs[0].data().active !== false), servicesCount: snap.size }, services: docsToJson(snap) });
-  }),
-);
-
-adminCatalogRouter.put(
-  "/folders/:id",
-  asyncHandler(async (req, res) => {
-    const folderName = req.params.id;
-    const { name, active } = req.body || {};
-    const snap = await collections.services.where("folder", "==", folderName).get();
-    const batch = db.batch();
-    snap.docs.forEach((doc) => {
-      const update = { updatedAt: FieldValue.serverTimestamp() };
-      if (name !== undefined) update.name = name;
-      if (active !== undefined) update.active = active;
-      batch.set(collections.services.doc(doc.id), update, { merge: true });
-    });
-    await batch.commit();
-    res.json({ ok: true, updated: snap.size });
-  }),
-);
-
-adminCatalogRouter.patch(
-  "/folders/:id/toggle",
-  asyncHandler(async (req, res) => {
-    const folderName = req.params.id;
-    const snap = await collections.services.where("folder", "==", folderName).get();
-    let currentActive = true;
-    if (!snap.empty) currentActive = snap.docs[0].data().active !== false;
-    const newActive = !currentActive;
-    const batch = db.batch();
-    snap.docs.forEach((doc) => batch.set(collections.services.doc(doc.id), { active: newActive, updatedAt: FieldValue.serverTimestamp() }, { merge: true }));
-    await batch.commit();
-    res.json({ ok: true, active: newActive, updated: snap.size });
-  }),
-);
-
-adminCatalogRouter.delete(
-  "/folders/:id",
-  asyncHandler(async (req, res) => {
-    const folderName = req.params.id;
-    const snap = await collections.services.where("folder", "==", folderName).get();
-    const batch = db.batch();
-    snap.docs.forEach((doc) => batch.delete(collections.services.doc(doc.id)));
-    await batch.commit();
-    res.json({ ok: true, deleted: snap.size });
-  }),
-);
+// Folder management lives in `adminFolders.js` and is mounted at
+// `/api/admin/folders`. Keeping any `/folders/:id` handler here would shadow
+// those Mongo-backed routes (adminCatalog is mounted first), so this router
+// deliberately owns services, cities, promos and settings only.

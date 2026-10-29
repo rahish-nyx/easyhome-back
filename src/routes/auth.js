@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { collections } from "../config/firebase.js";
+import { collections } from "../config/store.js";
 import { env } from "../config/env.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import {
@@ -20,7 +20,7 @@ import {
   tokenSchema,
   workerProfileSchema,
 } from "../lib/validate.js";
-import { FieldValue } from "../lib/firestore.js";
+import { FieldValue } from "../lib/values.js";
 import { uploadCloudinaryImage } from "../lib/media.js";
 import { emailLayout, notifyAdmins, sendMail } from "../lib/notify.js";
 import { applyReferralForNewUser } from "../lib/referrals.js";

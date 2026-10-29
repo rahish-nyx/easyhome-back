@@ -2,30 +2,16 @@
  * subscription activation, commission clearing and webhook idempotency.
  * Run with the API on http://localhost:5000. Test keys only. */
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import { FieldValue } from "firebase-admin/firestore";
-import { auth, collections } from "../src/config/firebase.js";
+import { FieldValue } from "../src/lib/values.js";
+import { collections } from "../src/config/store.js";
 import { env } from "../src/config/env.js";
+import { hashPassword } from "../src/lib/auth.js";
 
 const API = "http://localhost:5000/api";
 const PASSWORD = "QaPass123!456";
 const STAMP = Date.now();
 const CUSTOMER_EMAIL = `qa.rzp.customer.${STAMP}@easyhome.test`;
 const WORKER_EMAIL = `qa.rzp.worker.${STAMP}@easyhome.test`;
-
-const frontendEnv = fs.readFileSync(
-  path.resolve(process.cwd(), "../easyhomes/.env.local"),
-  "utf8",
-);
-const apiKey = frontendEnv
-  .split(/\r?\n/)
-  .find((line) => line.startsWith("VITE_FIREBASE_API_KEY="))
-  ?.split("=")
-  .slice(1)
-  .join("=")
-  .trim();
-if (!apiKey) throw new Error("VITE_FIREBASE_API_KEY missing");
 
 const created = { users: [], subscriptionIds: [], commissionIds: [], paymentIds: [] };
 
@@ -39,39 +25,31 @@ function hmac(secret, value) {
   return crypto.createHmac("sha256", secret).update(value).digest("hex");
 }
 async function signIn(email) {
-  const res = await fetch(
-    `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password: PASSWORD, returnSecureToken: true }),
-    },
-  );
-  const data = await res.json();
-  if (!res.ok) fail(`Sign in ${email}`, data?.error?.message);
-  return data.idToken;
+  const res = await call("POST", "/auth/login", {
+    body: { email, password: PASSWORD },
+  });
+  if (!res.ok) fail(`Sign in ${email}`, res.data?.error);
+  return res.data.token;
 }
 async function ensureUser(email, name, role, claims) {
-  const user = await auth.createUser({
-    email,
-    password: PASSWORD,
-    displayName: name,
-    emailVerified: true,
-  });
-  created.users.push(user.uid);
-  await auth.setCustomUserClaims(user.uid, claims);
-  await collections.users.doc(user.uid).set({
-    uid: user.uid,
+  const uid = crypto.randomUUID();
+  created.users.push(uid);
+  await collections.users.doc(uid).set({
+    uid,
     name,
     email,
     phone: role === "worker" ? "9876543299" : "9876543298",
     role,
+    admin: claims?.admin === true,
+    workerApproved: claims?.workerApproved === true,
+    emailVerified: true,
+    passwordHash: await hashPassword(PASSWORD),
     city: "Indore",
     state: "Madhya Pradesh",
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
-  return user;
+  return { uid, email, name };
 }
 async function call(method, endpoint, { token, body } = {}) {
   const res = await fetch(`${API}${endpoint}`, {
@@ -106,7 +84,6 @@ async function cleanup() {
     await collections.workers.doc(uid).delete().catch(() => {});
     await collections.workersPublic.doc(uid).delete().catch(() => {});
     await collections.users.doc(uid).delete().catch(() => {});
-    await auth.deleteUser(uid).catch(() => {});
   }
 }
 

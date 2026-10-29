@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { collections } from "../config/firebase.js";
+import { collections } from "../config/store.js";
 import { requireAuth } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { ensureReferralCode } from "../lib/referrals.js";
