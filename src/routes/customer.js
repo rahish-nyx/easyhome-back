@@ -70,7 +70,7 @@ async function attachBookingContacts(bookings) {
         collections.bookings
           .doc(item.id)
           .collection("private")
-          .doc("contact")
+          .doc(item.id)
           .get()
           .catch(() => null),
       ),
@@ -383,7 +383,7 @@ customerRouter.post(
 
     const batch = db.batch();
     batch.set(bookingRef, bookingDoc);
-    batch.set(bookingRef.collection("private").doc("contact"), {
+    batch.set(bookingRef.collection("private").doc(bookingRef.id), {
       phone: normalizePhone(body.phone),
       createdAt: now,
     });
@@ -1330,7 +1330,7 @@ customerRouter.get(
     if (isCustomer || isAdmin) {
       counterpartPhone = String(worker?.phone || "");
     } else if (isWorker) {
-      const contactSnap = await bookingSnap.ref.collection("private").doc("contact").get();
+      const contactSnap = await bookingSnap.ref.collection("private").doc(bookingSnap.ref.id).get();
       counterpartPhone = contactSnap.exists ? String(contactSnap.data().phone || "") : "";
     }
 
@@ -1376,7 +1376,7 @@ customerRouter.get(
     const contactSnap = await collections.bookings
       .doc(req.params.id)
       .collection("private")
-      .doc("contact")
+      .doc(req.params.id)
       .get();
     res.json({ phone: contactSnap.exists ? contactSnap.data().phone : "" });
   }),

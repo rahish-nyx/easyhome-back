@@ -1122,7 +1122,7 @@ workerRouter.get(
         const contactSnap = await collections.bookings
           .doc(booking.id)
           .collection("private")
-          .doc("contact")
+          .doc(booking.id)
           .get()
           .catch(() => null);
         return {
