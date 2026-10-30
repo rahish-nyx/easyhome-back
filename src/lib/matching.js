@@ -136,9 +136,26 @@ export function workerMatchesBooking(worker, booking, zone = null) {
   const target = bookingPoint(booking, zone);
   const point = workerPoint(worker);
 
+  // Workers without GPS but registered in the same city/state as the zone can
+  // still receive and accept jobs there; distance is enforced when GPS exists.
+  if (zone && zone.isActive !== true) return false;
+  if (zone && !point) {
+    const workerCity = String(worker?.city || worker?.cityName || "").trim();
+    const workerState = String(worker?.state || worker?.stateName || "").trim();
+    const zoneCity = String(zone?.cityName || zone?.city || "").trim();
+    const zoneState = String(zone?.state || zone?.stateName || "").trim();
+    if (
+      workerCity &&
+      workerState &&
+      sameText(workerCity, zoneCity) &&
+      sameText(workerState, zoneState)
+    ) {
+      return true;
+    }
+  }
+
   // Text matching is only a fallback for legacy records without coordinates.
   if (!target || !point) {
-    if (zone && zone.isActive !== true) return false;
     return textMatches(worker, booking);
   }
 

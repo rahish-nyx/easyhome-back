@@ -334,10 +334,7 @@ workerRouter.post(
         throw new ApiError(403, "This job was reserved for another worker.", "JOB_RESERVED");
       }
 
-      if (
-        (booking.serviceZoneId && !zone) ||
-        !workerMatchesBooking({ ...worker, id: uid }, booking, zone)
-      ) {
+      if (zone && zone.isActive !== true) {
         throw new ApiError(
           403,
           "This job is outside your registered service area or its active radius.",
