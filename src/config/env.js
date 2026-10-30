@@ -78,14 +78,15 @@ export const env = {
     "https://localhost",
     "capacitor://localhost",
   ]),
-  publicWebUrl: (process.env.PUBLIC_WEB_URL || "https://easyhome-front.vercel.app").replace(
-    /\/+$/,
-    "",
-  ),
+  publicWebUrl: (process.env.PUBLIC_WEB_URL || "https://easyhome-front.vercel.app")
+    .replace(/^"+|"+$/g, "")
+    .replace(/\/+$/, "")
+    .trim(),
   smtpHost: process.env.SMTP_HOST || "smtp-relay.brevo.com",
   smtpPort: Number(process.env.SMTP_PORT || 587),
   smtpUser: process.env.SMTP_USER || "",
   smtpPassword: process.env.SMTP_PASSWORD || "",
+  brevoApiKey: process.env.BREVO_API_KEY || "",
   mailFrom:
     (process.env.MAIL_FROM || "EasyHome <official.easyhomeservices@gmail.com>")
       .replace(/^"+|"+$/g, "")

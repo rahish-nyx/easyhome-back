@@ -264,12 +264,15 @@ adminMoneyRouter.get(
   asyncHandler(async (_req, res) => {
     const [subsSnap, commissionsSnap] = await Promise.all([
       collections.subscriptions.where("status", "==", "active").limit(500).get(),
-      collections.commissions.where("status", "==", "approved").limit(500).get(),
+      collections.commissions.limit(1000).get(),
     ]);
 
     const months = lastMonths(6);
     let subscriptionTotal = 0;
     let commissionTotal = 0;
+    let feesDue = 0;
+    let feesSubmitted = 0;
+    let feesApproved = 0;
 
     docsToJson(subsSnap).forEach((sub) => {
       const date = toDate(sub.startAt) || toDate(sub.createdAt);
@@ -280,8 +283,24 @@ adminMoneyRouter.get(
     });
 
     docsToJson(commissionsSnap).forEach((commission) => {
-      const date = toDate(commission.approvedAt) || toDate(commission.createdAt);
       const amount = Number(commission.amount) || 0;
+      const status = String(commission.status || "pending");
+      if (status === "pending" || status === "rejected") {
+        feesDue += amount;
+        return;
+      }
+      if (status === "paid") {
+        feesSubmitted += amount;
+      }
+      if (status === "approved") {
+        feesApproved += amount;
+      }
+      // Submitted and approved fees are both recognised revenue: the worker
+      // has paid through Razorpay and the money is already with the platform.
+      const date =
+        toDate(commission.approvedAt) ||
+        toDate(commission.paidAt) ||
+        toDate(commission.createdAt);
       commissionTotal += amount;
       const bucket = months.find((month) => month.key === monthKey(date));
       if (bucket) bucket.commissions = (bucket.commissions || 0) + amount;
@@ -295,7 +314,11 @@ adminMoneyRouter.get(
       months,
       subscriptionTotal,
       commissionTotal,
+      feesDue,
+      feesSubmitted,
+      feesApproved,
       total: subscriptionTotal + commissionTotal,
+      generatedAt: new Date().toISOString(),
     });
   }),
 );

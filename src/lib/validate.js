@@ -106,6 +106,7 @@ export const loginSchema = z.object({
 export const googleAuthSchema = z
   .object({
     credential: z.string().trim().min(20).max(5000).optional(),
+    idToken: z.string().trim().min(20).max(5000).optional(),
     accessToken: z.string().trim().min(20).max(5000).optional(),
     role: z.enum(["customer", "worker"]).optional(),
     name: z.string().trim().min(2).max(80).optional(),
@@ -126,7 +127,7 @@ export const googleAuthSchema = z
       .regex(/^[a-zA-Z0-9]*$/, "Invalid referral code")
       .optional(),
   })
-  .refine((value) => value.credential || value.accessToken, {
+  .refine((value) => value.credential || value.idToken || value.accessToken, {
     message: "Google credential is required.",
     path: ["credential"],
   });
@@ -249,7 +250,12 @@ export const commissionPaidSchema = z.object({
 });
 
 export const chatSchema = z.object({
-  text: z.string().trim().min(1).max(1000),
+  text: z.string().trim().max(1000).optional().default(""),
+});
+
+export const jobPaymentModeSchema = z.object({
+  mode: z.enum(["cash", "upi"]),
+  reference: z.string().trim().max(120).optional().default(""),
 });
 
 export const adminUserUpdateSchema = z.object({

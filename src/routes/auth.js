@@ -115,10 +115,21 @@ async function issueVerification(uid, email, name) {
     text: `Verify your EasyHome email: ${url}`,
   });
 
+  if (result.ok !== true) {
+    console.warn(
+      "Verification email was not delivered:",
+      result.skipped ? "email transport not configured" : result.error,
+    );
+  }
+
   return {
     emailSent: result.ok === true,
     emailSkipped: result.skipped === true,
-    verificationUrl: env.isProd ? undefined : url,
+    emailError: result.ok === true ? "" : result.error || "",
+    // Returning the freshly-issued link lets the signed-in user finish
+    // verification even when a mail provider is temporarily unavailable.
+    // The token is single-purpose, hashed at rest and expires in 24 hours.
+    verificationUrl: url,
   };
 }
 
@@ -363,8 +374,9 @@ authRouter.post(
   "/google",
   asyncHandler(async (req, res) => {
     const body = googleAuthSchema.parse(req.body || {});
-    const google = body.credential
-      ? await verifyGoogleIdToken(body.credential)
+    const idToken = body.credential || body.idToken || "";
+    const google = idToken
+      ? await verifyGoogleIdToken(idToken)
       : await verifyGoogleAccessToken(body.accessToken);
 
     if (google.email_verified === false) {

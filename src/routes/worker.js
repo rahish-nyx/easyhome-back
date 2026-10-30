@@ -7,6 +7,7 @@ import { upload } from "../middleware/upload.js";
 import {
   availabilitySchema,
   commissionPaidSchema,
+  jobPaymentModeSchema,
   priceSchema,
   trackingLocationSchema,
   trackingPhaseSchema,
@@ -23,7 +24,7 @@ import {
   deleteStoredImage,
   uploadCloudinaryImage,
 } from "../lib/media.js";
-import { workerMatchesBooking } from "../lib/matching.js";
+import { workerDistanceKm, workerMatchesBooking } from "../lib/matching.js";
 import { jobFeedDocId, updateJobFeedStatus } from "../lib/jobFeed.js";
 import { markReferralServiceCompleted } from "../lib/referrals.js";
 import { notify, notifyAdmins, sendMail, emailLayout } from "../lib/notify.js";
@@ -33,12 +34,15 @@ import {
   sendTelegramDocument,
 } from "../lib/telegram.js";
 import {
+  AUTO_ARRIVE_METERS,
+  AUTO_START_MINUTES,
   PHASE_META,
   TRACKING_PHASES,
   nextPhase,
   phaseForBooking,
   phaseHistoryEntry,
 } from "../lib/tracking.js";
+import { distanceMeters } from "../lib/geo.js";
 import { docToJson, docsToJson, lastMonths, monthKey, toDate } from "../lib/utils.js";
 
 export const workerRouter = Router();
@@ -709,6 +713,14 @@ workerRouter.patch(
               : `/bookings/${req.params.id}/track`,
         });
       }
+      if (phase === TRACKING_PHASES.ARRIVED) {
+        await notify(uid, {
+          title: "You have arrived your destination",
+          body: `Working point reached for ${result.booking.service}. Start work now, or the timer starts automatically in ${AUTO_START_MINUTES} minutes.`,
+          type: "job_arrived",
+          link: `/worker?tab=track&job=${req.params.id}`,
+        });
+      }
     }
 
     res.json({ ok: true, phase: result.phase });
@@ -735,7 +747,23 @@ workerRouter.patch(
       }
 
       const now = FieldValue.serverTimestamp();
-      tx.update(bookingRef, {
+      const currentPhase = phaseForBooking(booking);
+      const targetLat = Number(booking.location?.lat);
+      const targetLng = Number(booking.location?.lng);
+      const meters =
+        Number.isFinite(targetLat) && Number.isFinite(targetLng)
+          ? distanceMeters(
+              { lat: Number(body.lat), lng: Number(body.lng) },
+              { lat: targetLat, lng: targetLng },
+            )
+          : null;
+      const autoArrived =
+        meters !== null &&
+        meters <= AUTO_ARRIVE_METERS &&
+        Boolean(booking.pricing?.confirmedAt) &&
+        [TRACKING_PHASES.ASSIGNED, TRACKING_PHASES.EN_ROUTE].includes(currentPhase);
+
+      const updates = {
         currentLat: body.lat,
         currentLng: body.lng,
         currentAccuracy: Number.isFinite(Number(body.accuracy))
@@ -747,7 +775,26 @@ workerRouter.patch(
         lastUpdatedTimestamp: now,
         trackingAlert: false,
         updatedAt: now,
-      });
+      };
+
+      if (autoArrived) {
+        updates.trackingPhase = TRACKING_PHASES.ARRIVED;
+        updates.arrivedAt = now;
+        updates.trackingStatusUpdatedAt = now;
+        updates.statusHistory = FieldValue.arrayUnion(
+          phaseHistoryEntry({
+            phase: TRACKING_PHASES.ARRIVED,
+            status: "accepted",
+            actorId: uid,
+            actorRole: "system",
+            lat: Number(body.lat),
+            lng: Number(body.lng),
+            note: "Auto-detected arrival inside the service geofence.",
+          }),
+        );
+      }
+
+      tx.update(bookingRef, updates);
       tx.set(
         workerRef,
         {
@@ -758,13 +805,38 @@ workerRouter.patch(
         },
         { merge: true },
       );
-      return { booking };
+      return {
+        booking,
+        autoArrived,
+        distanceMeters: meters,
+        phase: autoArrived ? TRACKING_PHASES.ARRIVED : currentPhase,
+      };
     });
+
+    if (result.autoArrived) {
+      await Promise.allSettled([
+        notify(result.booking.customerId, {
+          title: "Your pro has arrived",
+          body: `${result.booking.workerName || "Your professional"} reached the working point for ${result.booking.service}.`,
+          type: "job_arrived",
+          link: `/bookings/${req.params.id}/track`,
+        }),
+        notify(uid, {
+          title: "You have arrived your destination",
+          body: `Working point reached for ${result.booking.service}. Start work now, or the job timer starts automatically in ${AUTO_START_MINUTES} minutes.`,
+          type: "job_arrived",
+          link: `/worker?tab=track&job=${req.params.id}`,
+        }),
+      ]);
+    }
 
     res.json({
       ok: true,
       bookingId: req.params.id,
       activeJob: Boolean(result.booking.activeJob),
+      autoArrived: result.autoArrived,
+      phase: result.phase,
+      distanceMeters: result.distanceMeters,
       receivedAt: new Date().toISOString(),
     });
   }),
@@ -778,6 +850,7 @@ workerRouter.patch(
     const uid = req.user.uid;
     const bookingRef = collections.bookings.doc(req.params.id);
     const workerRef = collections.workers.doc(uid);
+    const settings = await appSettings();
 
     const result = await db.runTransaction(async (tx) => {
       const { booking } = await assertOwnJob(tx, req.params.id, uid);
@@ -787,6 +860,17 @@ workerRouter.patch(
       if (!booking.pricing?.confirmedAt) {
         throw new ApiError(409, "Confirm the final price first.", "PRICE_NOT_CONFIRMED");
       }
+      const workerSnap = await tx.get(workerRef);
+      const worker = workerSnap.exists ? workerSnap.data() : {};
+      const finalPrice = Math.round(
+        Number(booking.pricing?.finalPrice) ||
+          Number(booking.pricing?.workerPrice) ||
+          Number(booking.budget) ||
+          0,
+      );
+      const { commission } = commissionFor(finalPrice, feesPctFor(settings), {
+        premium: premiumActive(worker),
+      });
       const now = FieldValue.serverTimestamp();
       tx.update(bookingRef, {
         status: "completed",
@@ -801,6 +885,7 @@ workerRouter.patch(
         lastUpdatedTimestamp: now,
         trackingStatusUpdatedAt: now,
         updatedAt: now,
+        "pricing.commission": commission,
         statusHistory: FieldValue.arrayUnion(
           phaseHistoryEntry({
             phase: TRACKING_PHASES.COMPLETED,
@@ -820,7 +905,41 @@ workerRouter.patch(
         { jobsCompleted: FieldValue.increment(1), updatedAt: now },
         { merge: true },
       );
-      return { booking };
+
+      // Non-Pro platform fees are raised the moment the job is completed, so
+      // the worker sees "Fees Due" immediately instead of waiting for the
+      // customer to confirm payment. The deterministic document id keeps the
+      // later customer payment confirmation idempotent.
+      let feesRaised = 0;
+      if (commission > 0) {
+        const commissionRef = collections.commissions.doc(`fee_${bookingRef.id}`);
+        const existing = await tx.get(commissionRef);
+        if (!existing.exists) {
+          tx.set(commissionRef, {
+            workerId: uid,
+            workerName: booking.workerName || worker.name || "Worker",
+            bookingId: bookingRef.id,
+            service: booking.service,
+            amount: commission,
+            status: "pending",
+            note: "",
+            createdAt: now,
+            updatedAt: now,
+          });
+          tx.set(
+            workerRef,
+            {
+              dues: FieldValue.increment(commission),
+              dueCommissionAmount: FieldValue.increment(commission),
+              hasPendingCommission: true,
+              updatedAt: now,
+            },
+            { merge: true },
+          );
+          feesRaised = commission;
+        }
+      }
+      return { booking, commission, feesRaised };
     });
 
     await removeCompletedBookingImage(result.booking, bookingRef);
@@ -831,6 +950,15 @@ workerRouter.patch(
       type: "job_completed",
       link: "/bookings",
     });
+
+    if (result.feesRaised > 0) {
+      await notify(uid, {
+        title: "Platform fee due",
+        body: `₹${result.feesRaised} platform fee is now due for ${result.booking.service}. Pay from Fees Due to keep accepting jobs.`,
+        type: "commission",
+        link: "/worker?tab=earnings",
+      });
+    }
 
     await markReferralServiceCompleted(
       result.booking.customerId,
@@ -847,7 +975,54 @@ workerRouter.patch(
       });
     }
 
-    res.json({ ok: true, phase: TRACKING_PHASES.COMPLETED });
+    res.json({
+      ok: true,
+      phase: TRACKING_PHASES.COMPLETED,
+      commission: result.commission,
+      feesDue: result.feesRaised,
+      paymentOptions: ["upi", "cash"],
+    });
+  }),
+);
+
+workerRouter.post(
+  "/worker/jobs/:id/payment-mode",
+  requireAuth,
+  requireApprovedWorker,
+  asyncHandler(async (req, res) => {
+    const body = jobPaymentModeSchema.parse(req.body || {});
+    const uid = req.user.uid;
+    const bookingRef = collections.bookings.doc(req.params.id);
+
+    const result = await db.runTransaction(async (tx) => {
+      const { booking } = await assertOwnJob(tx, req.params.id, uid);
+      if (booking.status !== "completed") {
+        throw new ApiError(
+          409,
+          "Complete the job before recording how payment was collected.",
+          "STATUS_INVALID",
+        );
+      }
+      const now = FieldValue.serverTimestamp();
+      tx.update(bookingRef, {
+        workerPaymentMode: body.mode,
+        workerPaymentReference: body.reference || "",
+        workerPaymentRecordedAt: now,
+        updatedAt: now,
+      });
+      return { booking };
+    });
+
+    await notify(result.booking.customerId, {
+      title: body.mode === "upi" ? "UPI payment requested" : "Cash payment requested",
+      body: `${result.booking.workerName || "Your pro"} marked this job as payable by ${
+        body.mode === "upi" ? "UPI" : "cash"
+      }. Confirm the payment once done.`,
+      type: "payment",
+      link: `/bookings/${req.params.id}/track`,
+    });
+
+    res.json({ ok: true, mode: body.mode });
   }),
 );
 
@@ -939,8 +1114,27 @@ workerRouter.get(
       .orderBy("createdAt", "desc")
       .limit(80)
       .get();
+    const bookings = await Promise.all(
+      docsToJson(snap).map(async (booking) => {
+        if (!["accepted", "ongoing", "completed"].includes(booking.status)) {
+          return { ...booking, customerPhone: "" };
+        }
+        const contactSnap = await collections.bookings
+          .doc(booking.id)
+          .collection("private")
+          .doc("contact")
+          .get()
+          .catch(() => null);
+        return {
+          ...booking,
+          customerPhone: contactSnap?.exists
+            ? String(contactSnap.data().phone || "")
+            : "",
+        };
+      }),
+    );
     res.set("Cache-Control", "private, no-store");
-    res.json({ bookings: docsToJson(snap) });
+    res.json({ bookings });
   }),
 );
 
@@ -965,8 +1159,14 @@ workerRouter.get(
     // Matching includes the worker's primary trade and saved trades. The
     // booking was already radius-checked before this feed entry was created.
     const snap = await queryRef.orderBy("createdAt", "desc").limit(80).get();
+    const worker = workerSnap.exists ? { ...workerSnap.data(), id: req.user.uid } : null;
+    const jobs = docsToJson(snap).map((job) => ({
+      ...job,
+      distanceKm: worker ? workerDistanceKm(worker, job) : null,
+      customerPhone: "",
+    }));
     res.set("Cache-Control", "private, no-store");
-    res.json({ jobs: docsToJson(snap) });
+    res.json({ jobs });
   }),
 );
 

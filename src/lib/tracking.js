@@ -47,6 +47,10 @@ export const PHASE_META = Object.freeze({
 
 export const INACTIVITY_MS = 10 * 60 * 1000;
 export const NUDGE_REPEAT_MS = 10 * 60 * 1000;
+// Arrival is detected automatically when the worker's GPS enters this radius.
+export const AUTO_ARRIVE_METERS = 150;
+// If the worker does not tap Start after arriving, work starts automatically.
+export const AUTO_START_MINUTES = 8;
 export const ACTIVE_PHASES = [
   TRACKING_PHASES.ASSIGNED,
   TRACKING_PHASES.EN_ROUTE,
@@ -233,6 +237,78 @@ export async function sendTrackingNudge(ref, booking, { actor = "system" } = {})
 }
 
 /**
+ * Starts work automatically for jobs where the worker arrived but did not tap
+ * Start within AUTO_START_MINUTES. Both sides are notified so the customer
+ * sees the timer begin and the worker sees why the status changed.
+ */
+export async function autoStartArrivedJobs({ limit = 120 } = {}) {
+  const snap = await collections.bookings
+    .where("activeJob", "==", true)
+    .limit(limit)
+    .get();
+  if (snap.empty) return { started: 0 };
+
+  let started = 0;
+  for (const doc of snap.docs) {
+    const booking = doc.data();
+    if (booking.status !== "accepted") continue;
+    if (phaseForBooking(booking) !== TRACKING_PHASES.ARRIVED) continue;
+    if (!booking.pricing?.confirmedAt) continue;
+    const arrivedAt =
+      toDate(booking.arrivedAt) ||
+      toDate(booking.lastLocationAt) ||
+      toDate(booking.trackingStatusUpdatedAt);
+    if (
+      !arrivedAt ||
+      Date.now() - arrivedAt.getTime() < AUTO_START_MINUTES * 60_000
+    ) {
+      continue;
+    }
+
+    const now = FieldValue.serverTimestamp();
+    await doc.ref.set(
+      {
+        status: "ongoing",
+        trackingPhase: TRACKING_PHASES.WORKING,
+        startedAt: booking.startedAt || now,
+        autoStartedAt: now,
+        autoStarted: true,
+        lastUpdatedTimestamp: now,
+        trackingStatusUpdatedAt: now,
+        trackingAlert: false,
+        updatedAt: now,
+        statusHistory: FieldValue.arrayUnion(
+          phaseHistoryEntry({
+            phase: TRACKING_PHASES.WORKING,
+            status: "ongoing",
+            actorRole: "system",
+            note: `Work auto-started ${AUTO_START_MINUTES} minutes after arrival.`,
+          }),
+        ),
+      },
+      { merge: true },
+    );
+
+    await notify(booking.customerId, {
+      title: "Work has started",
+      body: `${booking.workerName || "Your professional"} started the ${booking.service} job automatically after arriving.`,
+      type: "job_started",
+      link: `/bookings/${doc.id}/track`,
+    });
+    if (booking.workerId) {
+      await notify(booking.workerId, {
+        title: "Job timer started automatically",
+        body: `${booking.service} auto-started ${AUTO_START_MINUTES} minutes after arrival. Tap Complete when the work is done.`,
+        type: "job_started",
+        link: `/worker?tab=track&job=${doc.id}`,
+      });
+    }
+    started += 1;
+  }
+  return { started };
+}
+
+/**
  * Finds active jobs whose status and GPS heartbeat have not changed for ten
  * minutes and nudges the assigned worker. Called by the worker app watchdog
  * and by the lightweight server interval in index.js.
@@ -286,8 +362,12 @@ let watchdogTimer = null;
 export function startTrackingWatchdog({ intervalMs = 60_000 } = {}) {
   if (watchdogTimer) return watchdogTimer;
   const tick = () => {
-    sweepInactiveJobs().catch((error) => {
-      console.warn("Tracking watchdog failed:", error.message);
+    Promise.allSettled([autoStartArrivedJobs(), sweepInactiveJobs()]).then((results) => {
+      results
+        .filter((result) => result.status === "rejected")
+        .forEach((result) =>
+          console.warn("Tracking watchdog failed:", result.reason?.message),
+        );
     });
   };
   const initial = setTimeout(tick, 20_000);

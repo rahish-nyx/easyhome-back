@@ -232,8 +232,34 @@ adminZonesRouter.get(
         return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
       });
 
+    const onlineSnap = await collections.workers
+      .where("online", "==", true)
+      .limit(300)
+      .get();
+    const activeWorkerIds = new Set(jobs.map((job) => job.workerId).filter(Boolean));
+    const onlineWorkers = docsToJson(onlineSnap)
+      .map((worker) => ({
+        id: worker.id,
+        name: worker.name || "Worker",
+        phone: worker.phone || "",
+        photoPath: worker.photoPath || "",
+        service: worker.service || "",
+        serviceKey: worker.serviceKey || "",
+        area: worker.area || worker.areaName || "",
+        city: worker.city || worker.cityName || "",
+        rating: Number(worker.rating) || 0,
+        jobsCompleted: Number(worker.jobsCompleted) || 0,
+        online: worker.online === true,
+        onActiveJob: activeWorkerIds.has(worker.id),
+        lat: coordinate(worker.currentLat) ?? coordinate(worker.lat),
+        lng: coordinate(worker.currentLng) ?? coordinate(worker.lng),
+        lastSeenAt: worker.lastSeenAt || worker.lastLocationAt || null,
+      }))
+      .filter((worker) => worker.lat !== null && worker.lng !== null);
+
     res.json({
       jobs,
+      workers: onlineWorkers,
       stats: {
         active: jobs.length,
         assigned: jobs.filter((job) => job.phase === "assigned").length,
@@ -242,6 +268,7 @@ adminZonesRouter.get(
         working: jobs.filter((job) => job.phase === "working").length,
         inactive: jobs.filter((job) => job.tracker.inactive).length,
         alerts: jobs.filter((job) => job.tracker.alert).length,
+        onlineWorkers: onlineWorkers.length,
       },
       generatedAt: new Date().toISOString(),
     });

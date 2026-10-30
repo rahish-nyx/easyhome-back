@@ -8,7 +8,8 @@ import {
   hashPassword,
   normalizeEmail,
 } from "../lib/auth.js";
-import { privateCloudinaryDownloadUrl } from "../lib/media.js";
+import { privateCloudinaryDownloadUrl, uploadCloudinaryImage } from "../lib/media.js";
+import { upload } from "../middleware/upload.js";
 import { updateJobFeedStatus } from "../lib/jobFeed.js";
 import { promoPaymentTotal } from "../lib/promos.js";
 import { notify } from "../lib/notify.js";
@@ -547,27 +548,49 @@ adminRouter.get(
 
 adminRouter.post(
   "/chats/:uid",
+  upload.single("image"),
   asyncHandler(async (req, res) => {
     const text = String(req.body?.text || "").trim();
-    if (!text) throw new ApiError(422, "Message is required.", "MESSAGE_REQUIRED");
     const uid = req.params.uid;
     const threadRef = collections.chatThreads.doc(uid);
     const messageRef = threadRef.collection("messages").doc();
     const now = FieldValue.serverTimestamp();
+
+    let imagePath = "";
+    if (req.file) {
+      try {
+        const uploaded = await uploadCloudinaryImage(req.file.buffer, {
+          folder: "support-chat",
+        });
+        imagePath = uploaded.url;
+      } catch (error) {
+        throw new ApiError(
+          502,
+          "The image could not be uploaded. Please try again.",
+          "CHAT_IMAGE_UPLOAD_FAILED",
+          { reason: error.code || error.message },
+        );
+      }
+    }
+    if (!text && !imagePath) {
+      throw new ApiError(422, "Message is required.", "MESSAGE_REQUIRED");
+    }
+    const preview = text ? text.slice(0, 120) : "📷 Photo";
 
     await db.runTransaction(async (tx) => {
       tx.set(messageRef, {
         senderId: "admin",
         senderRole: "admin",
         senderName: "EasyHome Support",
-        text,
+        text: text || "",
+        imagePath,
         read: false,
         createdAt: now,
       });
       tx.set(
         threadRef,
         {
-          lastMessage: text.slice(0, 120),
+          lastMessage: preview,
           lastAt: now,
           unreadForAdmin: 0,
           unreadForUser: FieldValue.increment(1),
@@ -579,12 +602,12 @@ adminRouter.post(
 
     await notify(uid, {
       title: "EasyHome Support",
-      body: text.slice(0, 120),
+      body: preview,
       type: "chat",
       link: "/chat",
     });
 
-    res.status(201).json({ ok: true, messageId: messageRef.id });
+    res.status(201).json({ ok: true, messageId: messageRef.id, imagePath });
   }),
 );
 

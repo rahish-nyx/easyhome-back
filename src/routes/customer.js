@@ -48,6 +48,49 @@ import { docToJson, docsToJson, normalizePhone, toDate } from "../lib/utils.js";
 
 export const customerRouter = Router();
 
+const CONTACT_VISIBLE_STATUSES = ["accepted", "ongoing", "completed"];
+
+/**
+ * Adds the customer's contact number (owner-only) and the assigned worker's
+ * number (only after acceptance) to booking payloads. Contact numbers live in
+ * a private subcollection so they are never exposed through job feeds.
+ */
+async function attachBookingContacts(bookings) {
+  if (!bookings.length) return bookings;
+  const workerIds = [...new Set(bookings.map((item) => item.workerId).filter(Boolean))];
+  const [workerEntries, contactEntries] = await Promise.all([
+    Promise.all(
+      workerIds.map(async (uid) => {
+        const snap = await collections.workers.doc(uid).get();
+        return [uid, snap.exists ? snap.data() : null];
+      }),
+    ),
+    Promise.all(
+      bookings.map((item) =>
+        collections.bookings
+          .doc(item.id)
+          .collection("private")
+          .doc("contact")
+          .get()
+          .catch(() => null),
+      ),
+    ),
+  ]);
+  const workers = new Map(workerEntries);
+  return bookings.map((booking, index) => {
+    const contact = contactEntries[index];
+    const worker = booking.workerId ? workers.get(booking.workerId) : null;
+    const revealWorker =
+      Boolean(booking.workerId) &&
+      CONTACT_VISIBLE_STATUSES.includes(booking.status);
+    return {
+      ...booking,
+      customerPhone: contact?.exists ? String(contact.data().phone || "") : "",
+      workerPhone: revealWorker ? String(worker?.phone || "") : "",
+    };
+  });
+}
+
 async function resolveService(serviceName, serviceKey) {
   const snap = await collections.services.where("active", "==", true).get();
   const services = docsToJson(snap);
@@ -373,8 +416,12 @@ customerRouter.post(
                 workerId: worker.id,
                 service: service.name,
                 serviceKey: service.key,
-                description: body.description.slice(0, 180),
+                customerName: customer.name || req.user.name || "Customer",
+                customerPhotoPath: customer.photoPath || "",
+                description: body.description.slice(0, 600),
                 area: body.area,
+                addressLabel: body.addressLabel || "",
+                imagePath,
                 lat: roundedLat,
                 lng: roundedLng,
                 cityName: bookingForMatching.cityName,
@@ -719,24 +766,35 @@ customerRouter.patch(
       });
 
       if (worker && commission > 0) {
-        const commissionRef = collections.commissions.doc();
-        tx.set(commissionRef, {
-          workerId: booking.workerId,
-          workerName: booking.workerName,
-          bookingId: ref.id,
-          service: booking.service,
-          amount: commission,
-          status: "pending",
-          note: "",
-          createdAt: FieldValue.serverTimestamp(),
-          updatedAt: FieldValue.serverTimestamp(),
-        });
-        tx.update(workerRef, {
-          dues: FieldValue.increment(commission),
-          dueCommissionAmount: FieldValue.increment(commission),
-          hasPendingCommission: true,
-          updatedAt: FieldValue.serverTimestamp(),
-        });
+        // The fee is normally raised at job completion. Only create it here
+        // for legacy bookings that predate that change, so dues are never
+        // counted twice.
+        const commissionRef = collections.commissions.doc(`fee_${ref.id}`);
+        const existingCommission = await tx.get(commissionRef);
+        if (!existingCommission.exists) {
+          tx.set(commissionRef, {
+            workerId: booking.workerId,
+            workerName: booking.workerName,
+            bookingId: ref.id,
+            service: booking.service,
+            amount: commission,
+            status: "pending",
+            note: "",
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          tx.update(workerRef, {
+            dues: FieldValue.increment(commission),
+            dueCommissionAmount: FieldValue.increment(commission),
+            hasPendingCommission: true,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        } else if (Number(existingCommission.data().amount) !== commission) {
+          tx.update(commissionRef, {
+            amount: commission,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        }
       }
 
       return { booking, commission, workerReceives, premium, urgentFee, paymentTotal };
@@ -941,6 +999,7 @@ customerRouter.post(
 customerRouter.post(
   "/chat",
   requireAuth,
+  upload.single("image"),
   asyncHandler(async (req, res) => {
     const { text } = chatSchema.parse(req.body || {});
     const uid = req.user.uid;
@@ -948,19 +1007,41 @@ customerRouter.post(
     const messageRef = threadRef.collection("messages").doc();
     const now = FieldValue.serverTimestamp();
 
+    let imagePath = "";
+    if (req.file) {
+      try {
+        const uploaded = await uploadCloudinaryImage(req.file.buffer, {
+          folder: "support-chat",
+        });
+        imagePath = uploaded.url;
+      } catch (error) {
+        throw new ApiError(
+          502,
+          "Your photo could not be uploaded. Please try again.",
+          "CHAT_IMAGE_UPLOAD_FAILED",
+          { reason: error.code || error.message },
+        );
+      }
+    }
+    if (!text && !imagePath) {
+      throw new ApiError(422, "Write a message or attach an image.", "MESSAGE_REQUIRED");
+    }
+
     const userSnap = await collections.users.doc(uid).get();
     const user = userSnap.exists ? userSnap.data() : {};
     const supportPriority =
       (user.role || "customer") === "customer" && customerPremiumActive(user)
         ? "pro"
         : "standard";
+    const preview = text ? text.slice(0, 120) : "📷 Photo";
 
     await db.runTransaction(async (tx) => {
       tx.set(messageRef, {
         senderId: uid,
         senderRole: user.role || "customer",
         senderName: user.name || "User",
-        text,
+        text: text || "",
+        imagePath,
         read: false,
         createdAt: now,
       });
@@ -972,7 +1053,7 @@ customerRouter.post(
           role: user.role || "customer",
           email: user.email || req.user.email,
           photoPath: user.photoPath || "",
-          lastMessage: text.slice(0, 120),
+          lastMessage: preview,
           lastAt: now,
           unreadForAdmin: FieldValue.increment(1),
           unreadForUser: 0,
@@ -986,7 +1067,14 @@ customerRouter.post(
       );
     });
 
-    res.status(201).json({ ok: true, messageId: messageRef.id });
+    await notifyAdmins({
+      title: supportPriority === "pro" ? "Pro customer message" : "New support message",
+      body: `${user.name || "A customer"}: ${preview}`,
+      type: "chat",
+      link: `/admin/chats?uid=${uid}`,
+    });
+
+    res.status(201).json({ ok: true, messageId: messageRef.id, imagePath });
   }),
 );
 
@@ -1124,8 +1212,9 @@ customerRouter.get(
       .orderBy("createdAt", "desc")
       .limit(60)
       .get();
+    const bookings = await attachBookingContacts(docsToJson(snap));
     res.set("Cache-Control", "private, no-store");
-    res.json({ bookings: docsToJson(snap) });
+    res.json({ bookings });
   }),
 );
 
@@ -1145,8 +1234,9 @@ customerRouter.get(
     if (!allowed) {
       throw new ApiError(403, "You do not have access to this booking.", "FORBIDDEN");
     }
+    const [bookingJson] = await attachBookingContacts([docToJson(snap)]);
     res.set("Cache-Control", "private, no-store");
-    res.json({ booking: docToJson(snap) });
+    res.json({ booking: bookingJson });
   }),
 );
 
