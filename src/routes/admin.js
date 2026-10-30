@@ -500,6 +500,57 @@ adminRouter.patch(
   }),
 );
 
+/* ----------------------------- BROADCAST --------------------------------- */
+
+adminRouter.post(
+  "/notifications/broadcast",
+  asyncHandler(async (req, res) => {
+    const title = String(req.body?.title || "").trim();
+    const body = String(req.body?.body || "").trim();
+    const link = String(req.body?.link || "").trim();
+    const audience = String(req.body?.audience || "all");
+    const userIds = Array.isArray(req.body?.userIds)
+      ? req.body.userIds.map((value) => String(value))
+      : [];
+
+    if (title.length < 2) {
+      throw new ApiError(422, "Add a notification title.", "TITLE_REQUIRED");
+    }
+    if (body.length < 2) {
+      throw new ApiError(422, "Add a notification message.", "BODY_REQUIRED");
+    }
+
+    const snap = await collections.users.limit(2000).get();
+    let targets = docsToJson(snap).filter(
+      (user) => user.role !== "admin" && user.disabled !== true,
+    );
+
+    if (audience === "customers") {
+      targets = targets.filter(
+        (user) => (user.role || "customer") === "customer",
+      );
+    } else if (audience === "workers") {
+      targets = targets.filter((user) => user.role === "worker");
+    } else if (audience === "specific") {
+      const wanted = new Set(userIds);
+      targets = targets.filter((user) => wanted.has(String(user.id)));
+    }
+
+    let sent = 0;
+    for (const user of targets) {
+      await notify(user.id, {
+        title,
+        body,
+        type: "broadcast",
+        link: link || "/",
+      });
+      sent += 1;
+    }
+
+    res.json({ ok: true, sent });
+  }),
+);
+
 /* ---------------------------------- CHAT --------------------------------- */
 
 adminRouter.get(
@@ -578,7 +629,7 @@ adminRouter.post(
     const preview = text ? text.slice(0, 120) : "📷 Photo";
 
     await db.runTransaction(async (tx) => {
-      tx.set(messageRef, {
+      await tx.set(messageRef, {
         senderId: "admin",
         senderRole: "admin",
         senderName: "EasyHome Support",
@@ -587,7 +638,7 @@ adminRouter.post(
         read: false,
         createdAt: now,
       });
-      tx.set(
+      await tx.set(
         threadRef,
         {
           lastMessage: preview,
@@ -765,7 +816,7 @@ adminRouter.patch(
           ? { approvedAt: FieldValue.serverTimestamp() }
           : { rejectedAt: FieldValue.serverTimestamp() }),
       };
-      tx.update(ref, update);
+      await tx.update(ref, update);
       return { referral: { ...referral, ...update }, already: false };
     });
 

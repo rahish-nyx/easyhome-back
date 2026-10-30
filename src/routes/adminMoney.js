@@ -54,7 +54,7 @@ adminMoneyRouter.patch(
       const end = new Date(start);
       end.setMonth(end.getMonth() + (Number(sub.months) || 1));
 
-      tx.update(ref, {
+      await tx.update(ref, {
         status: "active",
         startAt: Timestamp.fromDate(start),
         endAt: Timestamp.fromDate(end),
@@ -64,7 +64,7 @@ adminMoneyRouter.patch(
       });
 
       const userRef = collections.users.doc(sub.userId);
-      tx.set(
+      await tx.set(
         userRef,
         {
           subscription: {
@@ -80,7 +80,7 @@ adminMoneyRouter.patch(
       );
 
       if (sub.userRole === "worker") {
-        tx.set(
+        await tx.set(
           collections.workers.doc(sub.userId),
           {
             premiumUntil: Timestamp.fromDate(end),
@@ -88,7 +88,7 @@ adminMoneyRouter.patch(
           },
           { merge: true },
         );
-        tx.set(
+        await tx.set(
           collections.workersPublic.doc(sub.userId),
           {
             premiumUntil: Timestamp.fromDate(end),
@@ -200,13 +200,13 @@ adminMoneyRouter.patch(
       const dues = workerDues(workerSnap.data());
       const remaining = Math.max(0, dues - Number(commission.amount || 0));
 
-      tx.update(ref, {
+      await tx.update(ref, {
         status: "approved",
         approvedBy: req.user.uid,
         approvedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       });
-      tx.set(
+      await tx.set(
         workerRef,
         {
           dues: remaining,

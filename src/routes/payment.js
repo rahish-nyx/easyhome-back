@@ -113,7 +113,7 @@ async function fulfillSubscription({ orderId, paymentId, subscriptionId, userId 
     const end = new Date(start);
     end.setMonth(end.getMonth() + (Number(sub.months) || 1));
 
-    tx.update(snap.ref, {
+    await tx.update(snap.ref, {
       status: "active",
       paymentProvider: "razorpay",
       paymentStatus: "captured",
@@ -129,7 +129,7 @@ async function fulfillSubscription({ orderId, paymentId, subscriptionId, userId 
       paymentNote: "",
     });
 
-    tx.set(
+    await tx.set(
       collections.users.doc(sub.userId),
       {
         subscription: {
@@ -148,7 +148,7 @@ async function fulfillSubscription({ orderId, paymentId, subscriptionId, userId 
     );
 
     if (sub.userRole === "worker") {
-      tx.set(
+      await tx.set(
         collections.workers.doc(sub.userId),
         {
           premiumUntil: Timestamp.fromDate(end),
@@ -156,7 +156,7 @@ async function fulfillSubscription({ orderId, paymentId, subscriptionId, userId 
         },
         { merge: true },
       );
-      tx.set(
+      await tx.set(
         collections.workersPublic.doc(sub.userId),
         {
           premiumUntil: Timestamp.fromDate(end),
@@ -167,7 +167,7 @@ async function fulfillSubscription({ orderId, paymentId, subscriptionId, userId 
       );
     }
 
-    tx.set(
+    await tx.set(
       collections.payments.doc(paymentId),
       {
         paymentId,
@@ -246,7 +246,7 @@ async function fulfillCommission({ orderId, paymentId, commissionId, workerId })
     const dues = workerDues(workerSnap.data());
     const remaining = Math.max(0, dues - Number(commission.amount || 0));
 
-    tx.update(snap.ref, {
+    await tx.update(snap.ref, {
       status: "approved",
       paymentProvider: "razorpay",
       paymentStatus: "captured",
@@ -260,7 +260,7 @@ async function fulfillCommission({ orderId, paymentId, commissionId, workerId })
       approvedBy: "razorpay",
       updatedAt: FieldValue.serverTimestamp(),
     });
-    tx.set(
+    await tx.set(
       workerRef,
       {
         dues: remaining,
@@ -270,7 +270,7 @@ async function fulfillCommission({ orderId, paymentId, commissionId, workerId })
       },
       { merge: true },
     );
-    tx.set(
+    await tx.set(
       collections.payments.doc(paymentId),
       {
         paymentId,

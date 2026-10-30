@@ -512,7 +512,7 @@ customerRouter.patch(
       if (data.pricing?.customerOffer) {
         throw new ApiError(409, "You already sent one counter-offer.", "OFFER_EXISTS");
       }
-      tx.update(ref, {
+      await tx.update(ref, {
         "pricing.customerOffer": Math.round(price),
         updatedAt: FieldValue.serverTimestamp(),
       });
@@ -577,7 +577,7 @@ customerRouter.patch(
         },
       );
 
-      tx.update(ref, {
+      await tx.update(ref, {
         "pricing.finalPrice": price,
         "pricing.commission": commission,
         "pricing.workerReceives": workerReceives,
@@ -657,7 +657,7 @@ customerRouter.patch(
         );
       }
 
-      tx.update(ref, {
+      await tx.update(ref, {
         status: "cancelled",
         activeJob: false,
         trackingAlert: false,
@@ -676,7 +676,7 @@ customerRouter.patch(
           at: Timestamp.now(),
         }),
       });
-      tx.delete(collections.urgentPublic.doc(ref.id));
+      await tx.delete(collections.urgentPublic.doc(ref.id));
       return { ...data, status: "cancelled" };
     });
 
@@ -748,7 +748,7 @@ customerRouter.patch(
       // the agreed service price.
       const workerReceives = serviceEarnings + urgentFee;
 
-      tx.update(ref, {
+      await tx.update(ref, {
         paidAt: FieldValue.serverTimestamp(),
         paymentMode: mode,
         paymentReference: reference || "",
@@ -772,7 +772,7 @@ customerRouter.patch(
         const commissionRef = collections.commissions.doc(`fee_${ref.id}`);
         const existingCommission = await tx.get(commissionRef);
         if (!existingCommission.exists) {
-          tx.set(commissionRef, {
+          await tx.set(commissionRef, {
             workerId: booking.workerId,
             workerName: booking.workerName,
             bookingId: ref.id,
@@ -783,14 +783,14 @@ customerRouter.patch(
             createdAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp(),
           });
-          tx.update(workerRef, {
+          await tx.update(workerRef, {
             dues: FieldValue.increment(commission),
             dueCommissionAmount: FieldValue.increment(commission),
             hasPendingCommission: true,
             updatedAt: FieldValue.serverTimestamp(),
           });
         } else if (Number(existingCommission.data().amount) !== commission) {
-          tx.update(commissionRef, {
+          await tx.update(commissionRef, {
             amount: commission,
             updatedAt: FieldValue.serverTimestamp(),
           });
@@ -853,7 +853,7 @@ customerRouter.post(
       const nextCount = count + 1;
       const nextRating = Math.round(((current * count + stars) / nextCount) * 10) / 10;
 
-      tx.set(reviewRef, {
+      await tx.set(reviewRef, {
         bookingId: bookingRef.id,
         workerId: booking.workerId,
         workerName: booking.workerName,
@@ -864,16 +864,16 @@ customerRouter.post(
         comment: comment || "",
         createdAt: FieldValue.serverTimestamp(),
       });
-      tx.update(bookingRef, {
+      await tx.update(bookingRef, {
         reviewId: reviewRef.id,
         updatedAt: FieldValue.serverTimestamp(),
       });
-      tx.set(
+      await tx.set(
         workerRef,
         { rating: nextRating, reviewCount: nextCount, updatedAt: FieldValue.serverTimestamp() },
         { merge: true },
       );
-      tx.set(
+      await tx.set(
         collections.workersPublic.doc(booking.workerId),
         { rating: nextRating, reviewCount: nextCount, updatedAt: FieldValue.serverTimestamp() },
         { merge: true },
@@ -1036,7 +1036,7 @@ customerRouter.post(
     const preview = text ? text.slice(0, 120) : "📷 Photo";
 
     await db.runTransaction(async (tx) => {
-      tx.set(messageRef, {
+      await tx.set(messageRef, {
         senderId: uid,
         senderRole: user.role || "customer",
         senderName: user.name || "User",
@@ -1045,7 +1045,7 @@ customerRouter.post(
         read: false,
         createdAt: now,
       });
-      tx.set(
+      await tx.set(
         threadRef,
         {
           userId: uid,

@@ -349,7 +349,7 @@ workerRouter.post(
       const workerLat = coordinate(worker.currentLat) ?? coordinate(worker.lat);
       const workerLng = coordinate(worker.currentLng) ?? coordinate(worker.lng);
 
-      tx.update(bookingRef, {
+      await tx.update(bookingRef, {
         workerId: uid,
         workerName: worker.name,
         workerPhotoPath: worker.photoPath || "",
@@ -376,12 +376,12 @@ workerRouter.post(
           }),
         ),
       });
-      tx.set(
+      await tx.set(
         feedRef,
         { status: "taken", workerId: uid, updatedAt: now },
         { merge: true },
       );
-      tx.delete(collections.urgentPublic.doc(bookingRef.id));
+      await tx.delete(collections.urgentPublic.doc(bookingRef.id));
 
       return {
         booking: { ...booking, workerId: uid, workerName: worker.name, status: "accepted" },
@@ -436,7 +436,7 @@ workerRouter.patch(
         },
       );
 
-      tx.update(bookingRef, {
+      await tx.update(bookingRef, {
         "pricing.workerPrice": Math.round(price),
         "pricing.commission": commission,
         "pricing.workerReceives": workerReceives,
@@ -482,7 +482,7 @@ workerRouter.patch(
         throw new ApiError(422, "Set a valid final price first.", "PRICE_REQUIRED");
       }
 
-      tx.update(bookingRef, {
+      await tx.update(bookingRef, {
         status: "accepted",
         "pricing.finalPrice": finalPrice,
         "pricing.confirmedAt": FieldValue.serverTimestamp(),
@@ -524,7 +524,7 @@ workerRouter.patch(
         throw new ApiError(409, "This job has already been started.", "STATUS_INVALID");
       }
 
-      tx.update(bookingRef, {
+      await tx.update(bookingRef, {
         trackingPhase: TRACKING_PHASES.EN_ROUTE,
         enRouteAt: FieldValue.serverTimestamp(),
         lastUpdatedTimestamp: FieldValue.serverTimestamp(),
@@ -640,7 +640,7 @@ workerRouter.patch(
         updates.currentLng = null;
         updates.imagePath = FieldValue.delete();
         updates.imageCloudinaryId = FieldValue.delete();
-        tx.set(
+        await tx.set(
           workerRef,
           {
             currentLat: FieldValue.delete(),
@@ -651,14 +651,14 @@ workerRouter.patch(
           },
           { merge: true },
         );
-        tx.set(
+        await tx.set(
           collections.workersPublic.doc(uid),
           { jobsCompleted: FieldValue.increment(1), updatedAt: now },
           { merge: true },
         );
       }
 
-      tx.update(bookingRef, updates);
+      await tx.update(bookingRef, updates);
       return { booking, phase };
     });
 
@@ -794,8 +794,8 @@ workerRouter.patch(
         );
       }
 
-      tx.update(bookingRef, updates);
-      tx.set(
+      await tx.update(bookingRef, updates);
+      await tx.set(
         workerRef,
         {
           currentLat: body.lat,
@@ -872,7 +872,7 @@ workerRouter.patch(
         premium: premiumActive(worker),
       });
       const now = FieldValue.serverTimestamp();
-      tx.update(bookingRef, {
+      await tx.update(bookingRef, {
         status: "completed",
         trackingPhase: TRACKING_PHASES.COMPLETED,
         activeJob: false,
@@ -895,12 +895,12 @@ workerRouter.patch(
           }),
         ),
       });
-      tx.set(
+      await tx.set(
         workerRef,
         { jobsCompleted: FieldValue.increment(1), updatedAt: now },
         { merge: true },
       );
-      tx.set(
+      await tx.set(
         collections.workersPublic.doc(uid),
         { jobsCompleted: FieldValue.increment(1), updatedAt: now },
         { merge: true },
@@ -915,7 +915,7 @@ workerRouter.patch(
         const commissionRef = collections.commissions.doc(`fee_${bookingRef.id}`);
         const existing = await tx.get(commissionRef);
         if (!existing.exists) {
-          tx.set(commissionRef, {
+          await tx.set(commissionRef, {
             workerId: uid,
             workerName: booking.workerName || worker.name || "Worker",
             bookingId: bookingRef.id,
@@ -926,7 +926,7 @@ workerRouter.patch(
             createdAt: now,
             updatedAt: now,
           });
-          tx.set(
+          await tx.set(
             workerRef,
             {
               dues: FieldValue.increment(commission),
@@ -1004,7 +1004,7 @@ workerRouter.post(
         );
       }
       const now = FieldValue.serverTimestamp();
-      tx.update(bookingRef, {
+      await tx.update(bookingRef, {
         workerPaymentMode: body.mode,
         workerPaymentReference: body.reference || "",
         workerPaymentRecordedAt: now,
