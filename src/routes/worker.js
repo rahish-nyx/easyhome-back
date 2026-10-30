@@ -986,6 +986,28 @@ workerRouter.patch(
 );
 
 workerRouter.post(
+  "/worker/jobs/:id/hide-history",
+  requireAuth,
+  requireApprovedWorker,
+  asyncHandler(async (req, res) => {
+    const uid = req.user.uid;
+    const ref = collections.bookings.doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().workerId !== uid) {
+      throw new ApiError(404, "Job not found.", "JOB_NOT_FOUND");
+    }
+    if (snap.data().status !== "completed") {
+      throw new ApiError(409, "Only completed jobs can be removed from history.", "STATUS_INVALID");
+    }
+    await ref.set(
+      { workerHidden: true, updatedAt: FieldValue.serverTimestamp() },
+      { merge: true },
+    );
+    res.json({ ok: true });
+  }),
+);
+
+workerRouter.post(
   "/worker/jobs/:id/payment-mode",
   requireAuth,
   requireApprovedWorker,
