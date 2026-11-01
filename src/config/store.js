@@ -8,7 +8,42 @@ import {
   isPlainObject,
 } from "../lib/values.js";
 
+/**
+ * MongoDB document adapter.
+ *
+ * The rest of the codebase is written against a small Firestore-shaped API
+ * (`collection.doc(id).set/update/get`, `where/orderBy/limit`, batches and
+ * transactions). This module is the only place that translates that API into
+ * Mongo operations.
+ *
+ * Rules kept stable on purpose so existing documents remain readable:
+ *  - document id lives in `_id` (string), never an ObjectId,
+ *  - subcollection rows carry `_parentId`,
+ *  - dates are returned as `Timestamp` instances,
+ *  - unknown fields are stored as-is (models are `strict: false`).
+ */
+
 const INTERNAL_KEYS = new Set(["_id", "_parentId", "__v"]);
+
+/** Mongo error codes that mean the server cannot run multi-document
+ *  transactions (standalone mongod). Atlas replica sets always can. */
+const NO_TRANSACTION_CODES = new Set([20, 303, 8000]);
+const PATH_NOT_VIABLE_CODES = new Set([28, 52, 40]);
+
+function cannotRunTransactions(error) {
+  if (!error) return false;
+  if (NO_TRANSACTION_CODES.has(Number(error.code))) return true;
+  const message = String(error.message || "");
+  return (
+    message.includes("Transaction numbers are only allowed") ||
+    message.includes("replica set member or mongos") ||
+    message.includes("Transactions are not supported")
+  );
+}
+
+function pathNotViable(error) {
+  return Boolean(error) && PATH_NOT_VIABLE_CODES.has(Number(error.code));
+}
 
 function toDateValue(value) {
   if (value instanceof Timestamp) return value.toDate();
@@ -19,6 +54,9 @@ function toDateValue(value) {
 function toMongo(value) {
   if (value instanceof Timestamp) return value.toDate();
   if (value instanceof Date) return value;
+  if (value && typeof value === "object" && value._bsontype === "ObjectId") {
+    return value.toHexString();
+  }
   if (Array.isArray(value)) return value.map(toMongo);
   if (isPlainObject(value)) {
     return Object.fromEntries(
@@ -42,13 +80,25 @@ function fromMongo(value) {
   return value;
 }
 
+/**
+ * Turn Firestore write sentinels into plain values for a full document write.
+ */
 function materialize(value) {
   if (isFieldValue(value)) {
-    if (value.__easyhomeOp === "serverTimestamp") return new Date();
-    if (value.__easyhomeOp === "increment") return Number(value.value) || 0;
-    if (value.__easyhomeOp === "delete") return undefined;
-    if (value.__easyhomeOp === "arrayUnion") return value.items.map(toMongo);
-    if (value.__easyhomeOp === "arrayRemove") return [];
+    switch (value.__easyhomeOp) {
+      case "serverTimestamp":
+        return new Date();
+      case "increment":
+        return Number(value.value) || 0;
+      case "delete":
+        return undefined;
+      case "arrayUnion":
+        return value.items.map(toMongo);
+      case "arrayRemove":
+        return [];
+      default:
+        return undefined;
+    }
   }
   if (Array.isArray(value)) return value.map(materialize);
   if (isPlainObject(value)) {
@@ -74,45 +124,56 @@ function removeUndefined(value) {
   return value;
 }
 
+/**
+ * In-memory deep merge used for the rare `set(merge: true)` payload that Mongo
+ * cannot express with dotted `$set` paths (for example replacing a scalar with
+ * a map). Mirrors Firestore: maps merge, arrays and scalars replace.
+ */
 function mergeIntoTarget(target, incoming) {
   const out = { ...target };
   for (const [key, rawValue] of Object.entries(incoming)) {
     if (rawValue === undefined) continue;
     if (isFieldValue(rawValue)) {
-      if (rawValue.__easyhomeOp === "delete") {
-        delete out[key];
-        continue;
-      }
-      if (rawValue.__easyhomeOp === "serverTimestamp") {
-        out[key] = new Date();
-        continue;
-      }
-      if (rawValue.__easyhomeOp === "increment") {
-        out[key] = (Number(out[key]) || 0) + (Number(rawValue.value) || 0);
-        continue;
-      }
-      if (rawValue.__easyhomeOp === "arrayUnion") {
-        const current = Array.isArray(out[key]) ? out[key] : [];
-        const next = [...current];
-        for (const item of rawValue.items) {
-          const normalized = toMongo(item);
-          if (!next.some((entry) => JSON.stringify(entry) === JSON.stringify(normalized))) {
-            next.push(normalized);
+      switch (rawValue.__easyhomeOp) {
+        case "delete":
+          delete out[key];
+          break;
+        case "serverTimestamp":
+          out[key] = new Date();
+          break;
+        case "increment":
+          out[key] = (Number(out[key]) || 0) + (Number(rawValue.value) || 0);
+          break;
+        case "arrayUnion": {
+          const current = Array.isArray(out[key]) ? out[key] : [];
+          const next = [...current];
+          for (const item of rawValue.items) {
+            const normalized = toMongo(item);
+            if (
+              !next.some(
+                (entry) => JSON.stringify(entry) === JSON.stringify(normalized),
+              )
+            ) {
+              next.push(normalized);
+            }
           }
+          out[key] = next;
+          break;
         }
-        out[key] = next;
-        continue;
+        case "arrayRemove": {
+          const current = Array.isArray(out[key]) ? out[key] : [];
+          out[key] = current.filter(
+            (entry) =>
+              !rawValue.items.some(
+                (item) => JSON.stringify(entry) === JSON.stringify(toMongo(item)),
+              ),
+          );
+          break;
+        }
+        default:
+          break;
       }
-      if (rawValue.__easyhomeOp === "arrayRemove") {
-        const current = Array.isArray(out[key]) ? out[key] : [];
-        out[key] = current.filter(
-          (entry) =>
-            !rawValue.items.some(
-              (item) => JSON.stringify(entry) === JSON.stringify(toMongo(item)),
-            ),
-        );
-        continue;
-      }
+      continue;
     }
 
     if (isPlainObject(rawValue)) {
@@ -126,10 +187,72 @@ function mergeIntoTarget(target, incoming) {
   return out;
 }
 
-function documentId() {
-  return randomBytes(10).toString("hex");
+/**
+ * Build an atomic update document for `set(merge: true)`.
+ *
+ * Nested maps are flattened into dotted paths so MongoDB performs the merge
+ * itself instead of us reading the document and writing it back (which loses
+ * concurrent writes). Arrays and scalars are replaced as a whole, matching
+ * Firestore merge semantics.
+ */
+function buildMergeUpdate(data) {
+  const set = {};
+  const unset = {};
+  const inc = {};
+  const addToSet = {};
+  const pull = {};
+
+  const assign = (path, value) => {
+    if (isFieldValue(value)) {
+      switch (value.__easyhomeOp) {
+        case "serverTimestamp":
+          set[path] = new Date();
+          break;
+        case "increment":
+          inc[path] = Number(value.value) || 0;
+          break;
+        case "delete":
+          unset[path] = "";
+          break;
+        case "arrayUnion":
+          addToSet[path] = { $each: value.items.map(toMongo) };
+          break;
+        case "arrayRemove":
+          pull[path] = { $in: value.items.map(toMongo) };
+          break;
+        default:
+          break;
+      }
+      return;
+    }
+
+    if (isPlainObject(value)) {
+      const entries = Object.entries(value).filter(([, item]) => item !== undefined);
+      // Firestore treats an empty map in a merge write as a no-op.
+      if (!entries.length) return;
+      for (const [key, item] of entries) assign(`${path}.${key}`, item);
+      return;
+    }
+
+    set[path] = toMongo(value);
+  };
+
+  for (const [key, value] of Object.entries(data || {})) {
+    if (value === undefined) continue;
+    if (INTERNAL_KEYS.has(key)) continue;
+    assign(key, value);
+  }
+
+  const update = {};
+  if (Object.keys(set).length) update.$set = set;
+  if (Object.keys(inc).length) update.$inc = inc;
+  if (Object.keys(unset).length) update.$unset = unset;
+  if (Object.keys(addToSet).length) update.$addToSet = addToSet;
+  if (Object.keys(pull).length) update.$pull = pull;
+  return update;
 }
 
+/** Build the update document for `doc.update()` (field replacement). */
 function buildUpdatePayload(data) {
   const set = {};
   const inc = {};
@@ -137,7 +260,7 @@ function buildUpdatePayload(data) {
   const addToSet = {};
   const pull = {};
 
-  for (const [key, rawValue] of Object.entries(data)) {
+  for (const [key, rawValue] of Object.entries(data || {})) {
     if (rawValue === undefined) continue;
     if (isFieldValue(rawValue)) {
       switch (rawValue.__easyhomeOp) {
@@ -171,6 +294,10 @@ function buildUpdatePayload(data) {
   if (Object.keys(addToSet).length) update.$addToSet = addToSet;
   if (Object.keys(pull).length) update.$pull = pull;
   return update;
+}
+
+function documentId() {
+  return randomBytes(10).toString("hex");
 }
 
 class DocumentSnapshot {
@@ -270,32 +397,56 @@ class DocumentReference {
 
   async _set(data, { merge = false, session } = {}) {
     const model = getModel(this._collection.name);
-    const payload = removeUndefined(materialize(data || {}));
-    let doc;
+    const payload = data || {};
 
-    if (merge) {
-      let current = {};
-      try {
-        let query = model.findOne(this._filter()).lean();
-        if (session) query = query.session(session);
-        current = (await query.exec()) || {};
-      } catch {
-        current = {};
-      }
-      doc = mergeIntoTarget(current, data || {});
-      doc = removeUndefined(materialize(doc));
-    } else {
-      doc = payload;
+    if (!merge) {
+      const doc = removeUndefined(materialize(payload));
+      doc._id = this.id;
+      if (this._parentId) doc._parentId = this._parentId;
+      await model.replaceOne(this._filter(), doc, {
+        upsert: true,
+        session: session || undefined,
+      });
+      return this;
     }
 
-    doc._id = this.id;
-    if (this._parentId) doc._parentId = this._parentId;
+    const update = buildMergeUpdate(payload);
+    if (!Object.keys(update).length) {
+      // Empty merge write: Firestore keeps the document (or creates an empty
+      // one). Setting `_id` to its own value is a no-op for existing rows.
+      const base = { _id: this.id };
+      if (this._parentId) base._parentId = this._parentId;
+      await model.updateOne(
+        this._filter(),
+        { $set: base },
+        { upsert: true, session: session || undefined },
+      );
+      return this;
+    }
 
-    await model.replaceOne(this._filter(), doc, {
-      upsert: true,
-      session: session || undefined,
-    });
-    return this;
+    try {
+      await model.updateOne(this._filter(), update, {
+        upsert: true,
+        session: session || undefined,
+      });
+      return this;
+    } catch (error) {
+      if (!pathNotViable(error)) throw error;
+      // A dotted path cannot be applied because a parent field currently holds
+      // a scalar (or a different shape). Fall back to a read + deep merge and
+      // replace the whole document, which matches Firestore semantics.
+      let query = model.findOne(this._filter()).lean();
+      if (session) query = query.session(session);
+      const current = (await query.exec()) || {};
+      const merged = removeUndefined(materialize(mergeIntoTarget(current, payload)));
+      merged._id = this.id;
+      if (this._parentId) merged._parentId = this._parentId;
+      await model.replaceOne(this._filter(), merged, {
+        upsert: true,
+        session: session || undefined,
+      });
+      return this;
+    }
   }
 
   async update(data) {
@@ -332,6 +483,7 @@ class Query {
     this._orders = options.orders ? [...options.orders] : [];
     this._limit = options.limit ?? null;
     this._cursor = options.cursor ? [...options.cursor] : [];
+    this._cursorMode = options.cursorMode || "after";
   }
 
   _clone(patch) {
@@ -340,6 +492,7 @@ class Query {
       orders: this._orders,
       limit: this._limit,
       cursor: this._cursor,
+      cursorMode: this._cursorMode,
       ...patch,
     });
   }
@@ -361,19 +514,19 @@ class Query {
   }
 
   startAfter(...values) {
-    return this._clone({ cursor: values });
+    return this._clone({ cursor: values, cursorMode: "after" });
   }
 
   startAt(...values) {
-    return this._clone({ cursor: values });
+    return this._clone({ cursor: values, cursorMode: "at" });
   }
 
   endBefore(...values) {
-    return this._clone({ cursor: values });
+    return this._clone({ cursor: values, cursorMode: "before" });
   }
 
   endAt(...values) {
-    return this._clone({ cursor: values });
+    return this._clone({ cursor: values, cursorMode: "before-at" });
   }
 
   _mongoFilter() {
@@ -422,11 +575,40 @@ class Query {
     }
 
     if (this._cursor.length && this._orders.length) {
-      const { field, direction } = this._orders[0];
-      const value = toDateValue(this._cursor[0]);
-      conditions.push({
-        [field]: { [direction === "desc" ? "$lt" : "$gt"]: value },
-      });
+      const clauses = [];
+      const before =
+        this._cursorMode === "before" || this._cursorMode === "before-at";
+      const inclusive =
+        this._cursorMode === "at" || this._cursorMode === "before-at";
+
+      for (let index = 0; index < this._orders.length; index += 1) {
+        const order = this._orders[index];
+        const field = order.field === "id" ? "_id" : order.field;
+        const cursorValue = toDateValue(this._cursor[index]);
+        if (cursorValue === undefined) break;
+
+        const clause = {};
+        for (let prefix = 0; prefix < index; prefix += 1) {
+          const previous = this._orders[prefix];
+          const previousField = previous.field === "id" ? "_id" : previous.field;
+          clause[previousField] = toDateValue(this._cursor[prefix]);
+        }
+
+        const descending = order.direction === "desc";
+        const goesDown = before ? !descending : descending;
+        const operator = goesDown
+          ? inclusive
+            ? "$lte"
+            : "$lt"
+          : inclusive
+            ? "$gte"
+            : "$gt";
+        clause[field] = { [operator]: cursorValue };
+        clauses.push(clause);
+      }
+
+      if (clauses.length === 1) conditions.push(clauses[0]);
+      else if (clauses.length > 1) conditions.push({ $or: clauses });
     }
 
     if (!conditions.length) return {};
@@ -449,6 +631,10 @@ class Query {
   }
 
   async _get({ session } = {}) {
+    // Firestore `limit(0)` means "no documents". Mongo treats 0 as "no limit",
+    // so this must be handled before the query runs.
+    if (this._limit === 0) return new QuerySnapshot([]);
+
     const model = getModel(this._collection.name);
     let query = model.find(this._mongoFilter()).lean();
     const sort = this._mongoSort();
@@ -457,11 +643,7 @@ class Query {
     if (session) query = query.session(session);
     const rows = await query.exec();
     const docs = rows.map(
-      (row) =>
-        new DocumentSnapshot(
-          this._collection.doc(String(row._id)),
-          row,
-        ),
+      (row) => new DocumentSnapshot(this._collection.doc(String(row._id)), row),
     );
     return new QuerySnapshot(docs);
   }
@@ -540,6 +722,27 @@ class CollectionReference extends Query {
   }
 }
 
+/**
+ * Run a group of writes inside one MongoDB transaction when the server
+ * supports it, otherwise sequentially. Atomicity matters for dispatch,
+ * payouts and referrals: a half-applied batch is exactly the class of bug
+ * that leaves jobs "taken" but never notified.
+ */
+async function runWriteGroup(operations, session) {
+  for (const operation of operations) {
+    if (operation.type === "set") {
+      await operation.ref._set(operation.data, {
+        ...operation.options,
+        session,
+      });
+    } else if (operation.type === "update") {
+      await operation.ref._update(operation.data, { session });
+    } else if (operation.type === "delete") {
+      await operation.ref._delete({ session });
+    }
+  }
+}
+
 class WriteBatch {
   constructor() {
     this._operations = [];
@@ -562,17 +765,23 @@ class WriteBatch {
 
   async commit() {
     await connectDb();
-    for (const operation of this._operations) {
-      if (operation.type === "set") {
-        await operation.ref._set(operation.data, operation.options);
-      } else if (operation.type === "update") {
-        await operation.ref._update(operation.data);
-      } else if (operation.type === "delete") {
-        await operation.ref._delete();
-      }
-    }
+    const operations = this._operations;
     this._operations = [];
-    return this;
+    if (!operations.length) return this;
+
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(() => runWriteGroup(operations, session));
+      return this;
+    } catch (error) {
+      if (!cannotRunTransactions(error)) throw error;
+      // Standalone MongoDB (no replica set): apply the writes in order. This
+      // keeps local development usable without weakening Atlas behaviour.
+      await runWriteGroup(operations, null);
+      return this;
+    } finally {
+      await session.endSession();
+    }
   }
 }
 
@@ -616,6 +825,14 @@ export const db = {
         result = await handler(new Transaction(session));
       });
       return result;
+    } catch (error) {
+      if (cannotRunTransactions(error)) {
+        throw new Error(
+          "MongoDB transactions are unavailable on this connection. " +
+            "Use a MongoDB Atlas replica set for EasyHome.",
+        );
+      }
+      throw error;
     } finally {
       await session.endSession();
     }
