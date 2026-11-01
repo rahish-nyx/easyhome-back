@@ -466,7 +466,14 @@ workerRouter.post(
       await tx.delete(collections.urgentPublic.doc(bookingRef.id));
 
       return {
-        booking: { ...booking, workerId: uid, workerName: worker.name, status: "accepted" },
+        booking: {
+          ...booking,
+          workerId: uid,
+          workerName: worker.name,
+          status: "accepted",
+          activeJob: true,
+          trackingPhase: TRACKING_PHASES.ASSIGNED,
+        },
         customerId: booking.customerId,
         service: booking.service,
       };

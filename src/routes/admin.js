@@ -13,6 +13,7 @@ import { upload } from "../middleware/upload.js";
 import { updateJobFeedStatus } from "../lib/jobFeed.js";
 import { promoPaymentTotal } from "../lib/promos.js";
 import { notify } from "../lib/notify.js";
+import { TRACKING_PHASES, phaseHistoryEntry } from "../lib/tracking.js";
 import { approveWorker, syncPublicWorker } from "../lib/workers.js";
 import {
   appSettings,
@@ -435,6 +436,182 @@ adminRouter.patch(
 
     await audit(req.user.uid, "booking.cancel", { bookingId: ref.id, reason });
     res.json({ ok: true });
+  }),
+);
+
+adminRouter.patch(
+  "/bookings/:id/reassign",
+  asyncHandler(async (req, res) => {
+    const workerId = String(req.body?.workerId || "").trim();
+    const reason = String(req.body?.reason || "Reassigned by EasyHome support").slice(0, 300);
+    if (!workerId) {
+      throw new ApiError(
+        400,
+        "Choose a professional to reassign this booking.",
+        "WORKER_REQUIRED",
+      );
+    }
+
+    const ref = collections.bookings.doc(req.params.id);
+    const workerRef = collections.workers.doc(workerId);
+    const now = FieldValue.serverTimestamp();
+
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new ApiError(404, "Booking not found.", "NOT_FOUND");
+      const booking = snap.data();
+      if (["completed", "cancelled"].includes(booking.status)) {
+        throw new ApiError(
+          409,
+          "Completed or cancelled bookings cannot be reassigned.",
+          "STATUS_INVALID",
+        );
+      }
+      if (booking.workerId && booking.workerId === workerId) {
+        throw new ApiError(
+          409,
+          "This booking is already assigned to that professional.",
+          "ALREADY_ASSIGNED",
+        );
+      }
+
+      const workerSnap = await tx.get(workerRef);
+      if (!workerSnap.exists) {
+        throw new ApiError(404, "Worker profile not found.", "WORKER_NOT_FOUND");
+      }
+      const worker = workerSnap.data();
+      if (worker.status !== "approved") {
+        throw new ApiError(
+          409,
+          "Only approved professionals can be assigned a booking.",
+          "WORKER_NOT_APPROVED",
+        );
+      }
+      const trades = Array.isArray(worker.trades) ? worker.trades : [];
+      if (
+        booking.serviceKey !== worker.serviceKey &&
+        !trades.includes(booking.serviceKey)
+      ) {
+        throw new ApiError(
+          409,
+          `${worker.name || "This professional"} does not offer ${booking.service}.`,
+          "TRADE_MISMATCH",
+        );
+      }
+      if (worker.activeJobBookingId && worker.activeJobBookingId !== ref.id) {
+        throw new ApiError(
+          409,
+          `${worker.name || "This professional"} is already on another active job.`,
+          "ACTIVE_JOB_EXISTS",
+          { activeBookingId: worker.activeJobBookingId },
+        );
+      }
+
+      const previousWorkerId = booking.workerId || null;
+      if (previousWorkerId) {
+        const previousSnap = await tx.get(collections.workers.doc(previousWorkerId));
+        if (previousSnap.exists && previousSnap.data().activeJobBookingId === ref.id) {
+          await tx.set(
+            collections.workers.doc(previousWorkerId),
+            { activeJobBookingId: FieldValue.delete(), updatedAt: now },
+            { merge: true },
+          );
+        }
+      }
+
+      const latitude = Number.isFinite(Number(worker.currentLat))
+        ? Number(worker.currentLat)
+        : Number.isFinite(Number(worker.lat))
+          ? Number(worker.lat)
+          : null;
+      const longitude = Number.isFinite(Number(worker.currentLng))
+        ? Number(worker.currentLng)
+        : Number.isFinite(Number(worker.lng))
+          ? Number(worker.lng)
+          : null;
+      const hasPoint = latitude !== null && longitude !== null;
+
+      await tx.update(ref, {
+        workerId,
+        workerName: worker.name || "EasyHome Pro",
+        workerPhotoPath: worker.photoPath || "",
+        workerPhone: worker.phone || "",
+        status: "accepted",
+        activeJob: true,
+        trackingPhase: TRACKING_PHASES.ASSIGNED,
+        currentLat: hasPoint ? latitude : null,
+        currentLng: hasPoint ? longitude : null,
+        lastLocationAt: hasPoint ? now : null,
+        lastUpdatedTimestamp: now,
+        trackingStatusUpdatedAt: now,
+        trackingAlert: false,
+        trackingNudgeCount: 0,
+        acceptedAt: now,
+        arrivedAt: FieldValue.delete(),
+        startedAt: FieldValue.delete(),
+        reassignedAt: now,
+        reassignReason: reason,
+        updatedAt: now,
+        statusHistory: FieldValue.arrayUnion(
+          phaseHistoryEntry({
+            phase: TRACKING_PHASES.ASSIGNED,
+            status: "accepted",
+            actorId: req.user.uid,
+            actorRole: "admin",
+            note: `Reassigned by support: ${reason}`,
+          }),
+        ),
+      });
+
+      await tx.set(
+        workerRef,
+        { activeJobBookingId: ref.id, updatedAt: now },
+        { merge: true },
+      );
+
+      return { booking, previousWorkerId, workerName: worker.name || "EasyHome Pro" };
+    });
+
+    // Any other worker still holding an open feed entry should lose it.
+    try {
+      await updateJobFeedStatus(ref.id, "taken");
+    } catch (error) {
+      console.error(
+        "Could not close job-feed entries after reassignment:",
+        error.code || error.message,
+      );
+    }
+    await collections.urgentPublic.doc(ref.id).delete().catch(() => {});
+
+    const { booking, previousWorkerId, workerName } = result;
+    await notify(booking.customerId, {
+      title: "New professional assigned",
+      body: `${workerName} is now handling your ${booking.service} booking. Reason: ${reason}`,
+      type: "job_accepted",
+      link: `/bookings/${ref.id}/track`,
+    });
+    await notify(workerId, {
+      title: "Booking assigned by support",
+      body: `${booking.service} at ${booking.area} has been assigned to you.`,
+      type: "job_assigned",
+      link: "/worker",
+    });
+    if (previousWorkerId && previousWorkerId !== workerId) {
+      await notify(previousWorkerId, {
+        title: "Job reassigned",
+        body: `${booking.service} at ${booking.area} was reassigned by support. Reason: ${reason}`,
+        type: "cancelled",
+        link: "/worker",
+      });
+    }
+
+    await audit(req.user.uid, "booking.reassign", {
+      bookingId: ref.id,
+      workerId,
+      previousWorkerId,
+      reason,
+    });
+    res.json({ ok: true, workerId, workerName });
   }),
 );
 
