@@ -13,7 +13,8 @@
     "test": "node --test",
     "smoke:admin": "node scripts/smoke-admin.mjs",
     "test:e2e:accept": "node scripts/e2e-accept.mjs",
-    "test:e2e:reassign": "node scripts/e2e-reassign.mjs"
+    "test:e2e:reassign": "node scripts/e2e-reassign.mjs",
+    "test:e2e:lifecycle": "node scripts/e2e-lifecycle.mjs"
   },
   "engines": {
     "node": ">=20"
