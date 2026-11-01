@@ -676,6 +676,13 @@ customerRouter.patch(
           at: Timestamp.now(),
         }),
       });
+      if (data.workerId) {
+        await tx.set(
+          collections.workers.doc(data.workerId),
+          { activeJobBookingId: FieldValue.delete(), updatedAt: FieldValue.serverTimestamp() },
+          { merge: true },
+        );
+      }
       await tx.delete(collections.urgentPublic.doc(ref.id));
       return { ...data, status: "cancelled" };
     });
@@ -752,6 +759,8 @@ customerRouter.patch(
         paidAt: FieldValue.serverTimestamp(),
         paymentMode: mode,
         paymentReference: reference || "",
+        paymentStatus: "paid",
+        customerPaymentConfirmedAt: FieldValue.serverTimestamp(),
         status: "completed",
         "pricing.finalPrice": finalPrice,
         "pricing.urgentFee": urgentFee,

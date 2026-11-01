@@ -91,8 +91,17 @@ function textMatches(worker, location) {
   return true;
 }
 
+function registeredWorkerPoint(worker) {
+  const registered = { lat: worker?.registeredLat, lng: worker?.registeredLng };
+  if (hasCoords(registered)) {
+    return { lat: Number(registered.lat), lng: Number(registered.lng) };
+  }
+  if (!hasCoords(worker)) return null;
+  return { lat: Number(worker.lat), lng: Number(worker.lng) };
+}
+
 export function workerDistanceKm(worker, location) {
-  const point = workerPoint(worker);
+  const point = registeredWorkerPoint(worker);
   const target = {
     lat: Number(location?.lat),
     lng: Number(location?.lng),
@@ -134,7 +143,7 @@ export function workerMatchesBooking(worker, booking, zone = null) {
   }
 
   const target = bookingPoint(booking, zone);
-  const point = workerPoint(worker);
+  const point = registeredWorkerPoint(worker);
 
   // Workers without GPS but registered in the same city/state as the zone can
   // still receive and accept jobs there; distance is enforced when GPS exists.

@@ -361,7 +361,26 @@ adminRouter.get(
         .orderBy("createdAt", "desc");
     }
     const snap = await queryRef.limit(limit).get();
-    res.json({ bookings: docsToJson(snap) });
+    const bookings = docsToJson(snap);
+    const workerIds = [...new Set(bookings.map((booking) => booking.workerId).filter(Boolean))];
+    const workerDocs = await Promise.all(
+      workerIds.map((workerId) => collections.workers.doc(workerId).get()),
+    );
+    const workersById = new Map(
+      workerDocs.filter((workerDoc) => workerDoc.exists).map((workerDoc) => [workerDoc.id, workerDoc.data()]),
+    );
+    res.json({
+      bookings: bookings.map((booking) => {
+        const worker = workersById.get(booking.workerId) || {};
+        return {
+          ...booking,
+          workerPhone: booking.workerPhone || worker.phone || "",
+          workerRegisteredNumber: booking.workerRegisteredNumber || worker.phone || "",
+          workerFeesDue: Number(worker.dues || worker.dueCommissionAmount || 0),
+          workerFeesLocked: Boolean(worker.hasPendingCommission || Number(worker.dues) > 0),
+        };
+      }),
+    });
   }),
 );
 
@@ -379,11 +398,19 @@ adminRouter.patch(
 
     await ref.update({
       status: "cancelled",
+      activeJob: false,
+      trackingAlert: false,
       cancelReason: reason,
       cancelledAt: FieldValue.serverTimestamp(),
       cancelledBy: "admin",
       updatedAt: FieldValue.serverTimestamp(),
     });
+    if (booking.workerId) {
+      await collections.workers.doc(booking.workerId).set(
+        { activeJobBookingId: FieldValue.delete(), updatedAt: FieldValue.serverTimestamp() },
+        { merge: true },
+      );
+    }
     try {
       await updateJobFeedStatus(ref.id, "cancelled");
     } catch (error) {
@@ -456,6 +483,8 @@ adminRouter.patch(
     batch.update(ref, {
       paidAt: FieldValue.serverTimestamp(),
       paymentMode: mode,
+      paymentStatus: "paid",
+      customerPaymentConfirmedAt: FieldValue.serverTimestamp(),
       "pricing.finalPrice": finalPrice,
       "pricing.urgentFee": urgentFee,
       "pricing.baseTotal": baseTotal,

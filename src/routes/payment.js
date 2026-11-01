@@ -106,7 +106,11 @@ async function fulfillSubscription({ orderId, paymentId, subscriptionId, userId 
       return { sub, already: true };
     }
     if (sub.paymentId && sub.paymentId !== paymentId) {
-      return { sub, already: true };
+      throw new ApiError(
+        409,
+        "A different payment is already recorded for this membership order.",
+        "PAYMENT_MISMATCH",
+      );
     }
 
     const start = new Date();
@@ -239,6 +243,13 @@ async function fulfillCommission({ orderId, paymentId, commissionId, workerId })
 
     if (commission.status === "approved") {
       return { commission, already: true };
+    }
+    if (commission.paymentId && commission.paymentId !== paymentId) {
+      throw new ApiError(
+        409,
+        "A different payment is already recorded for this fee order.",
+        "PAYMENT_MISMATCH",
+      );
     }
 
     const workerRef = collections.workers.doc(commission.workerId);

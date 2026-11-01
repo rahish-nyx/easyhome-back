@@ -44,6 +44,7 @@ import {
 } from "../lib/tracking.js";
 import { distanceMeters } from "../lib/geo.js";
 import { docToJson, docsToJson, lastMonths, monthKey, toDate } from "../lib/utils.js";
+import { allServiceZones } from "../lib/zones.js";
 
 export const workerRouter = Router();
 
@@ -93,13 +94,20 @@ async function dispatchOpenJobsToWorker(uid, worker) {
     const zone = zoneSnap?.exists
       ? { id: zoneSnap.id, ...zoneSnap.data(), isActive: zoneSnap.data().isActive !== false }
       : null;
+    const matchingWorker = {
+      ...worker,
+      registeredLat: worker.registeredLat ?? zone?.latitude ?? null,
+      registeredLng: worker.registeredLng ?? zone?.longitude ?? null,
+    };
     const premium = premiumActive(worker);
     if (
       canAcceptJobs(worker, { premium }).allowed &&
-      workerMatchesBooking({ ...worker, id: uid }, booking, zone)
+      workerMatchesBooking({ ...matchingWorker, id: uid }, booking, zone)
     ) {
       const existingFeed = await collections.jobFeed.doc(jobFeedDocId(booking.id, uid)).get();
-      if (!existingFeed.exists || existingFeed.data().status !== "open") {
+      // Only create the feed entry once. A feed that is already open means the
+      // worker has been notified; "taken"/"hidden" means it was handled.
+      if (!existingFeed.exists) {
         matches.push({ booking, zone });
       }
     }
@@ -117,8 +125,12 @@ async function dispatchOpenJobsToWorker(uid, worker) {
         workerId: uid,
         service: booking.service,
         serviceKey: booking.serviceKey,
+        customerName: booking.customerName || "Customer",
+        customerPhotoPath: booking.customerPhotoPath || "",
         description: String(booking.description || "").slice(0, 180),
         area: booking.area,
+        addressLabel: booking.location?.label || "",
+        imagePath: booking.imagePath || "",
         lat: booking.location?.lat ?? null,
         lng: booking.location?.lng ?? null,
         cityName: booking.cityName || "",
@@ -192,8 +204,14 @@ workerRouter.patch(
     if (body.pricePerWork !== undefined) {
       updates.pricePerWork = Math.max(0, Math.round(body.pricePerWork));
     }
-    if (body.lat !== undefined) updates.lat = body.lat;
-    if (body.lng !== undefined) updates.lng = body.lng;
+    if (body.lat !== undefined) {
+      updates.lat = body.lat;
+      updates.registeredLat = body.lat;
+    }
+    if (body.lng !== undefined) {
+      updates.lng = body.lng;
+      updates.registeredLng = body.lng;
+    }
     if (body.online !== undefined) {
       if (body.online && worker.status !== "approved") {
         throw new ApiError(403, "You can go online after approval.", "NOT_APPROVED");
@@ -239,8 +257,30 @@ workerRouter.patch(
     const { online, lat, lng } = availabilitySchema.parse(req.body || {});
     const now = FieldValue.serverTimestamp();
     const location = {};
-    if (lat !== undefined) location.lat = lat;
-    if (lng !== undefined) location.lng = lng;
+    const workerSnap = await collections.workers.doc(req.user.uid).get();
+    const worker = workerSnap.exists ? workerSnap.data() : {};
+    const hasRegisteredPoint = coordinate(worker.registeredLat) !== null && coordinate(worker.registeredLng) !== null;
+    if (!hasRegisteredPoint) {
+      const zones = await allServiceZones();
+      const zone = zones.find((candidate) => {
+        const sameCity = String(candidate.cityName || "").trim().toLowerCase() === String(worker.city || "").trim().toLowerCase();
+        const sameState = String(candidate.state || candidate.stateName || "").trim().toLowerCase() === String(worker.state || "").trim().toLowerCase();
+        const workerArea = String(worker.areaName || "").trim().toLowerCase();
+        const zoneArea = String(candidate.areaName || "").trim().toLowerCase();
+        return sameCity && sameState && (!zoneArea || !workerArea || zoneArea === workerArea);
+      });
+      if (zone && coordinate(zone.latitude) !== null && coordinate(zone.longitude) !== null) {
+        location.registeredLat = Number(zone.latitude);
+        location.registeredLng = Number(zone.longitude);
+      }
+    }
+    if (lat !== undefined) {
+      location.currentLat = lat;
+    }
+    if (lng !== undefined) {
+      location.currentLng = lng;
+    }
+    location.lastLocationAt = now;
     await collections.workers.doc(req.user.uid).set(
       { online, ...location, lastSeenAt: now, updatedAt: now },
       { merge: true },
@@ -274,6 +314,24 @@ workerRouter.post(
     const workerRef = collections.workers.doc(uid);
     const feedRef = collections.jobFeed.doc(jobFeedDocId(req.params.id, uid));
 
+    // Keep the one-active-job rule authoritative on the server. The worker
+    // document lock handles new jobs, while the query also catches legacy
+    // bookings created before the lock field was introduced.
+    const activeJobs = await collections.bookings
+      .where("workerId", "==", uid)
+      .where("activeJob", "==", true)
+      .limit(2)
+      .get();
+    const legacyActiveJob = activeJobs.docs.find((doc) => doc.id !== req.params.id);
+    if (legacyActiveJob) {
+      throw new ApiError(
+        409,
+        "Complete or cancel your current active job before accepting another.",
+        "ACTIVE_JOB_EXISTS",
+        { activeBookingId: legacyActiveJob.id },
+      );
+    }
+
     const result = await db.runTransaction(async (tx) => {
       const bookingSnap = await tx.get(bookingRef);
       const workerSnap = await tx.get(workerRef);
@@ -295,6 +353,14 @@ workerRouter.post(
 
       const booking = bookingSnap.data();
       const worker = workerSnap.data();
+      if (worker.activeJobBookingId && worker.activeJobBookingId !== req.params.id) {
+        throw new ApiError(
+          409,
+          "Complete or cancel your current active job before accepting another.",
+          "ACTIVE_JOB_EXISTS",
+          { activeBookingId: worker.activeJobBookingId },
+        );
+      }
       const zoneSnap = booking.serviceZoneId
         ? await tx.get(collections.serviceZones.doc(booking.serviceZoneId))
         : null;
@@ -311,6 +377,7 @@ workerRouter.post(
       if (!gate.allowed) {
         const messages = {
           offline: "Go online to accept new jobs.",
+          active_job: "Complete or cancel your current active job before accepting another.",
           dues: `Pay ₹${gate.dues} in fees before accepting new jobs.`,
           not_approved: "Your worker account is not approved yet.",
           no_worker_profile: "Complete your worker profile first.",
@@ -338,6 +405,19 @@ workerRouter.post(
         throw new ApiError(
           403,
           "This job is outside your registered service area or its active radius.",
+          "OUT_OF_SERVICE_AREA",
+        );
+      }
+
+      const matchingWorker = {
+        ...worker,
+        registeredLat: worker.registeredLat ?? zone?.latitude ?? null,
+        registeredLng: worker.registeredLng ?? zone?.longitude ?? null,
+      };
+      if (!workerMatchesBooking({ ...matchingWorker, id: uid }, booking, zone)) {
+        throw new ApiError(
+          403,
+          "This job is outside your registered service zone or radius.",
           "OUT_OF_SERVICE_AREA",
         );
       }
@@ -373,6 +453,11 @@ workerRouter.post(
           }),
         ),
       });
+      await tx.set(
+        workerRef,
+        { activeJobBookingId: req.params.id, updatedAt: now },
+        { merge: true },
+      );
       await tx.set(
         feedRef,
         { status: "taken", workerId: uid, updatedAt: now },
@@ -517,21 +602,28 @@ workerRouter.patch(
         throw new ApiError(409, "Confirm the final price before starting.", "PRICE_NOT_CONFIRMED");
       }
       const currentPhase = phaseForBooking(booking);
-      if (currentPhase && currentPhase !== TRACKING_PHASES.ASSIGNED) {
+      if (currentPhase === TRACKING_PHASES.WORKING) {
         throw new ApiError(409, "This job has already been started.", "STATUS_INVALID");
       }
 
+      // The explicit Start button is the authoritative hand-off into the
+      // working phase. Complete the preparatory milestones atomically so the
+      // timer cannot start in the UI while the booking remains assigned.
       await tx.update(bookingRef, {
-        trackingPhase: TRACKING_PHASES.EN_ROUTE,
+        status: "ongoing",
+        trackingPhase: TRACKING_PHASES.WORKING,
         enRouteAt: FieldValue.serverTimestamp(),
+        arrivedAt: FieldValue.serverTimestamp(),
+        startedAt: FieldValue.serverTimestamp(),
+        activeJob: true,
         lastUpdatedTimestamp: FieldValue.serverTimestamp(),
         trackingStatusUpdatedAt: FieldValue.serverTimestamp(),
         trackingAlert: false,
         updatedAt: FieldValue.serverTimestamp(),
         statusHistory: FieldValue.arrayUnion(
           phaseHistoryEntry({
-            phase: TRACKING_PHASES.EN_ROUTE,
-            status: "accepted",
+            phase: TRACKING_PHASES.WORKING,
+            status: "ongoing",
             actorId: uid,
             actorRole: "worker",
           }),
@@ -541,13 +633,13 @@ workerRouter.patch(
     });
 
     await notify(result.booking.customerId, {
-      title: "Worker is on the way",
-      body: `${result.booking.workerName} started your ${result.booking.service} job and is heading to you.`,
+      title: "Work has started",
+      body: `${result.booking.workerName} started the ${result.booking.service} job.`,
       type: "job_started",
       link: `/bookings/${req.params.id}/track`,
     });
 
-    res.json({ ok: true, phase: TRACKING_PHASES.EN_ROUTE });
+    res.json({ ok: true, phase: TRACKING_PHASES.WORKING });
   }),
 );
 
@@ -575,6 +667,15 @@ workerRouter.patch(
 
       const currentPhase = phaseForBooking(booking);
       if (currentPhase === phase) {
+        const now = FieldValue.serverTimestamp();
+        await tx.update(bookingRef, {
+          status: meta.status,
+          trackingPhase: phase,
+          lastUpdatedTimestamp: now,
+          trackingStatusUpdatedAt: now,
+          trackingAlert: false,
+          updatedAt: now,
+        });
         return { booking, unchanged: true, phase };
       }
       if (phase !== nextPhase(currentPhase)) {
@@ -640,6 +741,7 @@ workerRouter.patch(
         await tx.set(
           workerRef,
           {
+            activeJobBookingId: FieldValue.delete(),
             currentLat: FieldValue.delete(),
             currentLng: FieldValue.delete(),
             lastLocationAt: FieldValue.delete(),
@@ -851,7 +953,16 @@ workerRouter.patch(
 
     const result = await db.runTransaction(async (tx) => {
       const { booking } = await assertOwnJob(tx, req.params.id, uid);
-      if (booking.status !== "ongoing") {
+      // Accept all started phases so legacy bookings that were left in
+      // en-route/arrived state can still be completed from the worker card.
+      const currentPhase = phaseForBooking(booking);
+      const hasStarted =
+        booking.status === "ongoing" ||
+        Boolean(booking.startedAt) ||
+        [TRACKING_PHASES.EN_ROUTE, TRACKING_PHASES.ARRIVED, TRACKING_PHASES.WORKING].includes(
+          currentPhase,
+        );
+      if (!hasStarted) {
         throw new ApiError(409, "Only ongoing jobs can be completed.", "STATUS_INVALID");
       }
       if (!booking.pricing?.confirmedAt) {
@@ -894,7 +1005,11 @@ workerRouter.patch(
       });
       await tx.set(
         workerRef,
-        { jobsCompleted: FieldValue.increment(1), updatedAt: now },
+        {
+          activeJobBookingId: FieldValue.delete(),
+          jobsCompleted: FieldValue.increment(1),
+          updatedAt: now,
+        },
         { merge: true },
       );
       await tx.set(
@@ -1027,6 +1142,7 @@ workerRouter.post(
         workerPaymentMode: body.mode,
         workerPaymentReference: body.reference || "",
         workerPaymentRecordedAt: now,
+        paymentStatus: "awaiting_customer",
         updatedAt: now,
       });
       return { booking };

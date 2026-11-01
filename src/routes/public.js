@@ -276,6 +276,31 @@ publicRouter.get(
 );
 
 publicRouter.get(
+  "/zones",
+  asyncHandler(async (_req, res) => {
+    const zones = (await allServiceZones())
+      .filter((zone) => zone && zone.isActive !== false)
+      .map((zone) => ({
+        id: zone.id,
+        cityName: zone.cityName || "",
+        state: zone.state || "",
+        areaName: zone.areaName || "",
+        label:
+          [zone.areaName, zone.cityName, zone.state].filter(Boolean).join(", ") ||
+          zone.cityName ||
+          "Service zone",
+        latitude: zone.latitude ?? null,
+        longitude: zone.longitude ?? null,
+        radiusKm: zone.radiusKm ?? null,
+      }))
+      .filter((zone) => zone.label);
+
+    res.set("Cache-Control", "public, max-age=60, s-maxage=300, stale-while-revalidate=600");
+    res.json({ zones });
+  }),
+);
+
+publicRouter.get(
   "/folders",
   asyncHandler(async (_req, res) => {
     const [foldersSnap, servicesSnap] = await Promise.all([

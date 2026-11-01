@@ -343,6 +343,13 @@ export function canAcceptJobs(worker, { premium = premiumActive(worker) } = {}) 
   if (worker.online === false) {
     return { allowed: false, reason: "offline" };
   }
+  if (worker.activeJobBookingId) {
+    return {
+      allowed: false,
+      reason: "active_job",
+      activeBookingId: worker.activeJobBookingId,
+    };
+  }
   const dues = workerDues(worker);
   if (!premium && dues > 0) {
     return { allowed: false, reason: "dues", dues };

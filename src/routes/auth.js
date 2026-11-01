@@ -245,6 +245,8 @@ async function saveWorkerRecord(uid, body, user, existing = null) {
       areaName: body.areaName || "",
       lat: coordinate(body.lat),
       lng: coordinate(body.lng),
+      registeredLat: coordinate(body.lat),
+      registeredLng: coordinate(body.lng),
       online: false,
       status: WORKER_STATUS.PENDING,
       rating: existing?.rating || 0,

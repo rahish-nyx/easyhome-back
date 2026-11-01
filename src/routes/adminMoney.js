@@ -175,9 +175,19 @@ adminMoneyRouter.get(
         .orderBy("createdAt", "desc");
     }
     const snap = await queryRef.limit(100).get();
+    const commissions = docsToJson(snap);
+    const workerIds = [...new Set(commissions.map((commission) => commission.workerId).filter(Boolean))];
+    const workerDocs = await Promise.all(
+      workerIds.map((workerId) => collections.workers.doc(workerId).get()),
+    );
+    const workersById = new Map(
+      workerDocs.filter((workerDoc) => workerDoc.exists).map((workerDoc) => [workerDoc.id, workerDoc.data()]),
+    );
     res.json({
-      commissions: docsToJson(snap).map((commission) => ({
+      commissions: commissions.map((commission) => ({
         ...commission,
+        workerPhone: workersById.get(commission.workerId)?.phone || "",
+        workerRegisteredNumber: workersById.get(commission.workerId)?.phone || "",
         utrId: commission.utrId || commission.note || "",
       })),
     });
