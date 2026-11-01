@@ -3,9 +3,11 @@ import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
 import rateLimit from "express-rate-limit";
+import { waitUntil } from "@vercel/functions";
 import { env } from "./config/env.js";
 import { attachUser } from "./middleware/auth.js";
 import { errorHandler, notFound } from "./middleware/errors.js";
+import { scheduleTrackingSweep } from "./lib/tracking.js";
 import { authRouter } from "./routes/auth.js";
 import { publicRouter } from "./routes/public.js";
 import { customerRouter } from "./routes/customer.js";
@@ -127,6 +129,16 @@ app.use("/api", (req, res, next) => {
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "easyhome-api", version: 2, time: new Date().toISOString() });
+});
+
+// Vercel deploys this app as a stateless function (api/index.js), so the
+// interval in src/index.js never runs in production. Every API request may
+// therefore advance the tracking sweep; it is throttled and idempotent.
+app.use("/api", (req, _res, next) => {
+  if (!req.path.startsWith("/public/cron/")) {
+    scheduleTrackingSweep(waitUntil);
+  }
+  next();
 });
 
 app.use("/api/public", publicRouter);

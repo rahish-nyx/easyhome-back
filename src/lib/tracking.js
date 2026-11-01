@@ -358,17 +358,68 @@ export async function sweepInactiveJobs({ limit = 150 } = {}) {
 }
 
 let watchdogTimer = null;
+let sweepPromise = null;
+let lastSweepAt = 0;
+
+// Auto-start must run within minutes, so a daily cron is not enough. Instead
+// every API request may trigger a sweep, throttled per warm instance. The
+// sweeps are idempotent: they re-check the booking phase and the last nudge
+// time before writing, so overlapping instances stay safe.
+const SWEEP_THROTTLE_MS = 45_000;
+
+export function runTrackingSweep({ force = false } = {}) {
+  if (!force && Date.now() - lastSweepAt < SWEEP_THROTTLE_MS) {
+    return Promise.resolve(null);
+  }
+  if (sweepPromise) return sweepPromise;
+
+  lastSweepAt = Date.now();
+  sweepPromise = Promise.allSettled([autoStartArrivedJobs(), sweepInactiveJobs()])
+    .then((results) => {
+      results
+        .filter((result) => result.status === "rejected")
+        .forEach((result) =>
+          console.warn("Tracking sweep failed:", result.reason?.message),
+        );
+      return {
+        autoStart: results[0].status === "fulfilled" ? results[0].value : null,
+        inactivity: results[1].status === "fulfilled" ? results[1].value : null,
+      };
+    })
+    .catch((error) => {
+      console.warn("Tracking sweep failed:", error?.message);
+      return null;
+    })
+    .finally(() => {
+      sweepPromise = null;
+    });
+
+  return sweepPromise;
+}
+
+/**
+ * Fire-and-forget sweep for the current request. Uses Vercel's `waitUntil`
+ * when available so serverless functions finish the work after responding;
+ * otherwise the promise simply runs in the background of a long-lived server.
+ */
+export function scheduleTrackingSweep(waitUntil) {
+  if (Date.now() - lastSweepAt < SWEEP_THROTTLE_MS) return;
+  const task = runTrackingSweep().catch(() => {});
+  if (typeof waitUntil === "function") {
+    try {
+      waitUntil(task);
+      return;
+    } catch {
+      /* fall through to background execution */
+    }
+  }
+  task.catch(() => {});
+}
 
 export function startTrackingWatchdog({ intervalMs = 60_000 } = {}) {
   if (watchdogTimer) return watchdogTimer;
   const tick = () => {
-    Promise.allSettled([autoStartArrivedJobs(), sweepInactiveJobs()]).then((results) => {
-      results
-        .filter((result) => result.status === "rejected")
-        .forEach((result) =>
-          console.warn("Tracking watchdog failed:", result.reason?.message),
-        );
-    });
+    runTrackingSweep({ force: true }).catch(() => {});
   };
   const initial = setTimeout(tick, 20_000);
   initial.unref?.();

@@ -16,6 +16,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@vercel/functions": "^3.10.5",
     "bcryptjs": "^3.0.3",
     "cloudinary": "^2.11.0",
     "compression": "^1.8.1",

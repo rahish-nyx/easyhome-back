@@ -19,6 +19,7 @@ import {
 import { waitlistSchema } from "../lib/validate.js";
 import { isPromoLive } from "../lib/promos.js";
 import { docToJson, docsToJson } from "../lib/utils.js";
+import { runTrackingSweep } from "../lib/tracking.js";
 
 export const publicRouter = Router();
 const reverseGeocodeCache = new Map();
@@ -824,6 +825,30 @@ publicRouter.get(
       settings: snap.exists,
       time: new Date().toISOString(),
     });
+  }),
+);
+
+/**
+ * Tracking watchdog entry point.
+ *
+ * Production runs on serverless functions, so a background interval cannot be
+ * relied on. Vercel Cron (or any uptime pinger) can call this route to run the
+ * arrival/auto-start and inactivity sweeps. When CRON_SECRET is set the caller
+ * must send `Authorization: Bearer <secret>`.
+ */
+publicRouter.all(
+  "/cron/tracking",
+  asyncHandler(async (req, res) => {
+    const secret = String(process.env.CRON_SECRET || "").trim();
+    if (secret) {
+      const header = String(req.get("authorization") || "");
+      if (header !== `Bearer ${secret}`) {
+        throw new ApiError(401, "Unauthorized.", "UNAUTHORIZED");
+      }
+    }
+    const result = await runTrackingSweep({ force: true });
+    res.set("Cache-Control", "no-store");
+    res.json({ ok: true, result, time: new Date().toISOString() });
   }),
 );
 
