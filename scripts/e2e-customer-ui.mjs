@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { randomBytes } from "node:crypto";
+import { request } from "node:http";
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
+import mongoose from "mongoose";
 import { collections } from "../src/config/store.js";
 import { claimsFrom, createToken, hashPassword } from "../src/lib/auth.js";
 import { jobFeedDocId } from "../src/lib/jobFeed.js";
@@ -10,6 +12,11 @@ import { jobFeedDocId } from "../src/lib/jobFeed.js";
  *
  * Modes:
  *   create                  create a verified customer + approved worker
+ *   book                    create a booking as the customer (prints id + token)
+ *   ongoing <bookingId>     accept, quote, confirm, start, ping location
+ *   ping <bookingId> [dLat] [dLng]
+ *                           move the worker relative to the zone centre
+ *   finish <bookingId>      mark the job complete (worker side)
  *   drive <bookingId>       worker accepts, quotes, confirms, starts, completes
  *   status <bookingId>      print booking/payment/review state
  *   cleanup <bookingId>     delete the booking and every fixture row
@@ -38,19 +45,46 @@ function workerToken(state) {
   }));
 }
 
-async function api(method, path, token, body) {
-  const res = await fetch(`http://127.0.0.1:5000/api${path}`, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+function customerToken(state) {
+  return createToken(claimsFrom({
+    user: {
+      uid: state.customerId, _id: state.customerId, role: "customer",
+      name: "UI Test Customer", email: state.customerEmail, emailVerified: true,
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    worker: null,
+    isAdmin: false,
+  }));
+}
+
+async function api(method, path, token, body) {
+  const payload = body === undefined ? null : JSON.stringify(body);
+  const result = await new Promise((resolve, reject) => {
+    const req = request(
+      {
+        hostname: "127.0.0.1",
+        port: 5000,
+        path: `/api${path}`,
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          ...(payload ? { "Content-Length": Buffer.byteLength(payload) } : {}),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+      (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => { text += chunk; });
+        res.on("end", () => resolve({ status: res.statusCode, text }));
+      },
+    );
+    req.on("error", reject);
+    if (payload) req.write(payload);
+    req.end();
   });
-  const text = await res.text();
   let json = null;
-  try { json = text ? JSON.parse(text) : null; } catch { json = { raw: text.slice(0, 200) }; }
-  return { status: res.status, json };
+  try { json = result.text ? JSON.parse(result.text) : null; } catch { json = { raw: result.text.slice(0, 200) }; }
+  return { status: result.status, json };
 }
 
 if (mode === "create") {
@@ -111,6 +145,83 @@ if (mode === "create") {
   };
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
   console.log(JSON.stringify(state, null, 2));
+} else if (mode === "book") {
+  const state = loadState();
+  const token = customerToken(state);
+  const created = await api("POST", "/bookings", token, {
+    service: "Home Cleaning",
+    serviceKey: "cleaning",
+    description: "Tracking page fixture: two bedroom deep clean please.",
+    area: "House 12, Jamua main road, Giridih",
+    city: state.zone.name,
+    state: state.zone.state,
+    areaName: state.zone.areaName,
+    lat: state.zone.lat,
+    lng: state.zone.lng,
+    phone: "9999999999",
+    budget: 299,
+    urgency: "normal",
+  });
+  if (created.status !== 201) {
+    console.error(JSON.stringify(created.json, null, 2));
+    process.exit(1);
+  }
+  console.log(JSON.stringify({
+    bookingId: created.json.booking.id,
+    customerToken: token,
+  }, null, 2));
+} else if (mode === "ongoing") {
+  const state = loadState();
+  const bookingId = process.argv[3];
+  if (!bookingId) throw new Error("bookingId required");
+  const token = workerToken(state);
+  const steps = {};
+  steps.accept = await api("POST", `/worker/jobs/${bookingId}/accept`, token);
+  steps.price = await api("PATCH", `/worker/jobs/${bookingId}/price`, token, { price: 350 });
+  steps.confirm = await api("PATCH", `/worker/jobs/${bookingId}/confirm`, token);
+  steps.start = await api("PATCH", `/worker/jobs/${bookingId}/start`, token);
+  steps.location = await api("PATCH", `/worker/jobs/${bookingId}/location`, token, {
+    lat: state.zone.lat + 0.004,
+    lng: state.zone.lng + 0.003,
+    accuracy: 12,
+  });
+  console.log(JSON.stringify(
+    Object.fromEntries(Object.entries(steps).map(([k, v]) => [k, { status: v.status, code: v.json?.code || null }])),
+    null,
+    2,
+  ));
+  if (!Object.values(steps).every((s) => s.status === 200)) {
+    console.error(JSON.stringify(Object.fromEntries(Object.entries(steps).map(([k, v]) => [k, v.json])), null, 2));
+    process.exit(1);
+  }
+} else if (mode === "ping") {
+  const state = loadState();
+  const bookingId = process.argv[3];
+  if (!bookingId) throw new Error("bookingId required");
+  const dLat = Number(process.argv[4] ?? 0.0025);
+  const dLng = Number(process.argv[5] ?? 0.0015);
+  const token = workerToken(state);
+  const res = await api("PATCH", `/worker/jobs/${bookingId}/location`, token, {
+    lat: state.zone.lat + dLat,
+    lng: state.zone.lng + dLng,
+    accuracy: 10,
+  });
+  console.log(JSON.stringify({ status: res.status, code: res.json?.code || null }, null, 2));
+  if (res.status !== 200) {
+    console.error(JSON.stringify(res.json, null, 2));
+    process.exit(1);
+  }
+} else if (mode === "finish") {
+  const state = loadState();
+  const bookingId = process.argv[3];
+  if (!bookingId) throw new Error("bookingId required");
+  const token = workerToken(state);
+  const res = await api("PATCH", `/worker/jobs/${bookingId}/complete`, token);
+  console.log(JSON.stringify({ status: res.status, code: res.json?.code || null }, null, 2));
+  if (res.status !== 200) {
+    console.error(JSON.stringify(res.json, null, 2));
+    process.exit(1);
+  }
 } else if (mode === "drive") {
   const state = loadState();
   const bookingId = process.argv[3];
@@ -175,4 +286,12 @@ if (mode === "create") {
 } else {
   throw new Error(`unknown mode ${mode}`);
 }
+
+// Close the Mongo connection cleanly; Windows otherwise aborts in libuv teardown
+// when a fixture mode finishes right after its last query. Flush stdout first so
+// piped output is not truncated, then exit explicitly to avoid the undici close
+// assertion on Windows.
+await mongoose.disconnect().catch(() => {});
+await new Promise((resolve) => process.stdout.write("", resolve));
+process.exit(0);
 process.exit(0);
