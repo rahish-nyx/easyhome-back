@@ -32,5 +32,8 @@ uploads/*
 !uploads/.gitkeep
 dist
 
+# Throwaway E2E fixture state
+scripts/.e2e-customer-fixture.json
+
 # Vercel
 .vercel
