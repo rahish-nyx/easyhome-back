@@ -214,8 +214,8 @@ adminZonesRouter.get(
               coordinate(booking.currentLng) ??
               coordinate(worker?.currentLng) ??
               coordinate(worker?.lng),
-            customerLat: point?.latitude ?? null,
-            customerLng: point?.longitude ?? null,
+            customerLat: point?.lat ?? null,
+            customerLng: point?.lng ?? null,
             distanceMeters: eta.distanceMeters,
             etaMinutes: eta.etaMinutes,
             lastUpdatedAt: lastActivity ? lastActivity.toISOString() : null,
