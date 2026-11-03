@@ -448,6 +448,9 @@ export const settingsSchema = z.object({
   qrImageUrl: z.string().trim().max(500).optional(),
   supportPhone: z.string().trim().max(20).optional(),
   maintenanceMode: formBoolean.optional(),
+  accidentalDamageAssistLimit: z.coerce.number().min(0).max(2000).optional(),
+  renewalRewardPct: z.coerce.number().min(0).max(100).optional(),
+  renewalGraceDays: z.coerce.number().int().min(0).max(30).optional(),
 });
 
 export function parse(schema, data) {

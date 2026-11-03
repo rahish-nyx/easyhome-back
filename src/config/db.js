@@ -126,6 +126,7 @@ register("Worker", "workers", {
   reviewCount: Number,
   jobsCompleted: Number,
   premiumUntil: Date,
+  earlyAccess: Boolean,
   dues: Number,
   createdAt: Date,
   updatedAt: Date,
@@ -135,6 +136,7 @@ register("Worker", "workers", {
   { trades: 1, status: 1, online: 1 },
   { rating: -1 },
   { premiumUntil: 1 },
+  { earlyAccess: 1 },
   { createdAt: -1 },
 ]);
 
@@ -153,6 +155,7 @@ register("WorkerPublic", "workersPublic", {
   reviewCount: Number,
   jobsCompleted: Number,
   premiumUntil: Date,
+  earlyAccess: Boolean,
 }, [
   { serviceKey: 1, rating: -1 },
   { trades: 1, rating: -1 },

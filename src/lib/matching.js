@@ -200,6 +200,11 @@ export function workerMatchesLocation(worker, location, zone = null) {
 
 export function prioritizeWorkers(workers, isPremium) {
   return [...workers].sort((a, b) => {
+    // EasyHome Pro early access: early-access workers rank above regular
+    // professionals. Premium membership counts as early access.
+    const aEarly = Boolean(isPremium(a)) || a?.earlyAccess === true;
+    const bEarly = Boolean(isPremium(b)) || b?.earlyAccess === true;
+    if (aEarly !== bEarly) return aEarly ? -1 : 1;
     const aPremium = isPremium(a);
     const bPremium = isPremium(b);
     if (aPremium !== bPremium) return aPremium ? -1 : 1;

@@ -57,6 +57,13 @@ export const DEFAULT_WORKER_RULES = Object.freeze({
   cancellationMinutes: 7,
 });
 
+/** EasyHome Pro — accidental damage assistance limit per claim (₹). */
+export const DEFAULT_ACCIDENTAL_DAMAGE_LIMIT = Object.freeze(500);
+
+/** EasyHome Pro — exclusive continuous renewal reward (3% off next purchase). */
+export const DEFAULT_RENEWAL_REWARD_PCT = Object.freeze(3);
+export const DEFAULT_RENEWAL_GRACE_DAYS = Object.freeze(5);
+
 function planPrice(value, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) return fallback;
@@ -111,6 +118,7 @@ export const DEFAULT_CUSTOMER_BENEFITS = Object.freeze([
   "24×7 priority support",
   "Free cancellation for 20 minutes (7 for non-Pro)",
   "Verified Pro badge",
+  "Accidental damage assistance up to ₹500",
 ]);
 
 export const DEFAULT_WORKER_BENEFITS = Object.freeze([
@@ -212,6 +220,9 @@ export function appSettingsSyncDefaults() {
     qrImageUrl: "",
     supportPhone: "",
     maintenanceMode: false,
+    accidentalDamageAssistLimit: DEFAULT_ACCIDENTAL_DAMAGE_LIMIT,
+    renewalRewardPct: DEFAULT_RENEWAL_REWARD_PCT,
+    renewalGraceDays: DEFAULT_RENEWAL_GRACE_DAYS,
   };
 }
 
@@ -310,6 +321,39 @@ export function customerPremiumActive(user) {
 export function customerPremiumUntil(user) {
   const until = toDate(user?.subscription?.endAt);
   return until && until.getTime() > Date.now() ? until : null;
+}
+
+/** EasyHome Pro — accidental damage assistance limit (default ₹500). */
+export function accidentalDamageAssistLimit(settings = {}) {
+  const value = Number(settings?.accidentalDamageAssistLimit);
+  if (!Number.isFinite(value) || value < 0) return DEFAULT_ACCIDENTAL_DAMAGE_LIMIT;
+  return Math.round(value);
+}
+
+/** EasyHome Pro — exclusive continuous renewal reward (default 3% off). */
+export function renewalRewardPct(settings = {}) {
+  const value = Number(settings?.renewalRewardPct);
+  if (!Number.isFinite(value) || value < 0) return DEFAULT_RENEWAL_REWARD_PCT;
+  return value;
+}
+
+/** EasyHome Pro — continuous renewal grace period in days (default 5). */
+export function renewalGraceDays(settings = {}) {
+  const value = Number(settings?.renewalGraceDays);
+  if (!Number.isFinite(value) || value < 0) return DEFAULT_RENEWAL_GRACE_DAYS;
+  return Math.round(value);
+}
+
+/**
+ * EasyHome Pro — exclusive 3% continuous renewal reward.
+ * A customer becomes eligible once they have completed a successful renewal;
+ * the grace period preserves renewal eligibility (it does not extend benefits).
+ */
+export function renewalRewardDue({ renewalStreak, graceUntil, now = Date.now() } = {}) {
+  const streak = Number(renewalStreak) || 0;
+  const graceDeadline = graceUntil ? new Date(graceUntil).getTime() : 0;
+  const withinGrace = graceDeadline > 0 ? now <= graceDeadline : true;
+  return { eligible: streak >= 1 && withinGrace, streak, withinGrace };
 }
 
 export function workerDues(worker) {

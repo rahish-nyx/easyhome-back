@@ -6,8 +6,10 @@ import { env } from "../config/env.js";
 import { ApiError, asyncHandler } from "../middleware/errors.js";
 import { requireApprovedWorker, requireAuth } from "../middleware/auth.js";
 import {
+  accidentalDamageAssistLimit,
   appSettings,
   planMonths,
+  renewalGraceDays,
   subscriptionAmount,
   workerDues,
 } from "../lib/booking.js";
@@ -117,6 +119,21 @@ async function fulfillSubscription({ orderId, paymentId, subscriptionId, userId 
     const end = new Date(start);
     end.setMonth(end.getMonth() + (Number(sub.months) || 1));
 
+    const graceMs = renewalGraceDays(settings) * 86_400_000;
+    const prevQuery = collections.subscriptions
+      .where("userId", "==", sub.userId)
+      .orderBy("createdAt", "desc")
+      .limit(2);
+    const prevSnap = await tx.get(prevQuery);
+    const prevDoc = prevSnap.docs.find((doc) => doc.id !== sub.id);
+    const prev = prevDoc?.exists ? prevDoc.data() : null;
+    const prevEndMs =
+      prev?.endAt?.toDate ? prev.endAt.toDate().getTime() : Number(prev?.endAt) || 0;
+    const continuesStreak = Boolean(
+      prev && prev.status === "active" && start.getTime() <= prevEndMs + graceMs,
+    );
+    const renewalStreak = continuesStreak ? Number(prev?.renewalStreak || 0) + 1 : 0;
+
     await tx.update(snap.ref, {
       status: "active",
       paymentProvider: "razorpay",
@@ -131,6 +148,9 @@ async function fulfillSubscription({ orderId, paymentId, subscriptionId, userId 
       updatedAt: FieldValue.serverTimestamp(),
       utrId: "",
       paymentNote: "",
+      renewalStreak,
+      graceUntil: Timestamp.fromDate(new Date(start.getTime() + graceMs)),
+      rewardPending: continuesStreak ? true : false,
     });
 
     await tx.set(
@@ -146,6 +166,7 @@ async function fulfillSubscription({ orderId, paymentId, subscriptionId, userId 
           paymentId,
           utrId: "",
         },
+        renewalRewardPending: continuesStreak ? true : false,
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true },
@@ -188,11 +209,21 @@ async function fulfillSubscription({ orderId, paymentId, subscriptionId, userId 
       { merge: true },
     );
 
-    return { sub, end, already: false };
+    return { sub, end, already: false, renewalStreak, continuesStreak };
   });
 
   if (result.already) return { ok: true, already: true };
   const { sub, end } = result;
+
+  // EasyHome Pro — exclusive continuous renewal reward. Once a successful
+  // renewal completes, the customer becomes eligible for the next-purchase
+  // 3% discount (pending is consumed when a new order applies it).
+  if (result.continuesStreak) {
+    await collections.users.doc(sub.userId).set(
+      { renewalRewardPending: true },
+      { merge: true },
+    );
+  }
 
   await notify(sub.userId, {
     title: "Membership activated 🎉",
@@ -348,7 +379,18 @@ paymentRouter.post(
     }
 
     const role = user.role === "worker" ? "worker" : "customer";
-    const amount = subscriptionAmount(settings, role, plan);
+    let amount = subscriptionAmount(settings, role, plan);
+    let renewalReward = null;
+    // EasyHome Pro — exclusive continuous renewal reward: 3% off the next
+    // eligible membership purchase (applied automatically, no coupon codes).
+    if (user.renewalRewardPending === true) {
+      const rewardPct = Number(settings?.renewalRewardPct) || 3;
+      const discountedAmount = Math.round((amount * (100 - rewardPct)) / 100);
+      if (discountedAmount < amount) {
+        amount = discountedAmount;
+        renewalReward = { pct: rewardPct, source: "continuous-renewal", appliedAt: new Date().toISOString() };
+      }
+    }
     const months = planMonths(plan);
     const subRef = collections.subscriptions.doc();
     const order = await createRazorpayOrder({
@@ -379,11 +421,13 @@ paymentRouter.post(
       startAt: null,
       endAt: null,
       reviewedBy: null,
+      ...(renewalReward ? { reward: renewalReward } : {}),
     });
 
     await userRef.set(
       {
-        subscription: { ...current, status: "payment_pending", plan, amount },
+        subscription: { ...current, status: "payment_pending", plan, amount, ...(renewalReward ? { reward: renewalReward } : {}) },
+        renewalRewardPending: false,
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true },
