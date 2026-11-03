@@ -206,6 +206,11 @@ register("UrgentPublic", "urgentPublic", {
 register("Notification", "notifications", {
   userId: String,
   read: Boolean,
+  title: String,
+  body: String,
+  type: String,
+  link: String,
+  priority: String,
   createdAt: Date,
 }, [{ userId: 1, createdAt: -1 }, { read: 1 }]);
 

@@ -5,7 +5,7 @@ import { FieldValue } from "./values.js";
 
 /* ------------------- In-app notifications (MongoDB adapter) ------------------- */
 
-export async function notify(userId, { title, body, type = "info", link = "" }) {
+export async function notify(userId, { title, body, type = "info", link = "", priority = "standard" }) {
   if (!userId) return null;
   try {
     const ref = collections.notifications.doc();
@@ -15,6 +15,7 @@ export async function notify(userId, { title, body, type = "info", link = "" }) 
       body,
       type,
       link,
+      priority,
       read: false,
       createdAt: FieldValue.serverTimestamp(),
     });
@@ -25,7 +26,7 @@ export async function notify(userId, { title, body, type = "info", link = "" }) 
   }
 }
 
-export async function notifyAdmins({ title, body, type = "admin", link = "" }) {
+export async function notifyAdmins({ title, body, type = "admin", link = "", priority = "standard" }) {
   try {
     const admins = await collections.admins.limit(25).get();
     if (admins.empty) return;
@@ -38,6 +39,7 @@ export async function notifyAdmins({ title, body, type = "admin", link = "" }) {
         body,
         type,
         link,
+        priority,
         read: false,
         createdAt: FieldValue.serverTimestamp(),
       });

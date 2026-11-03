@@ -1038,10 +1038,14 @@ customerRouter.post(
 
     const userSnap = await collections.users.doc(uid).get();
     const user = userSnap.exists ? userSnap.data() : {};
-    const supportPriority =
-      (user.role || "customer") === "customer" && customerPremiumActive(user)
+    const role = user.role || "customer";
+    const isProUser =
+      customerPremiumActive(user) || premiumActive(user) || premiumActive({ premiumUntil: user?.subscription?.endAt });
+    const supportPriority = role === "customer" || role === "worker"
+      ? isProUser
         ? "pro"
-        : "standard";
+        : "standard"
+      : "standard";
     const preview = text ? text.slice(0, 120) : "📷 Photo";
 
     await db.runTransaction(async (tx) => {
@@ -1081,6 +1085,7 @@ customerRouter.post(
       body: `${user.name || "A customer"}: ${preview}`,
       type: "chat",
       link: `/admin/chats?uid=${uid}`,
+      priority: supportPriority,
     });
 
     res.status(201).json({ ok: true, messageId: messageRef.id, imagePath });
