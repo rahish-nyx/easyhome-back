@@ -2,6 +2,7 @@ import { collections } from "../config/store.js";
 import { env } from "../config/env.js";
 import { ApiError } from "../middleware/errors.js";
 import { toDate } from "./utils.js";
+import { workerMatchesBooking, prioritizeWorkers } from "./matching.js";
 
 export const BOOKING_STATUS = Object.freeze({
   PENDING: "pending",
@@ -399,6 +400,43 @@ export function canAcceptJobs(worker, { premium = premiumActive(worker) } = {}) 
     return { allowed: false, reason: "dues", dues };
   }
   return { allowed: true, premium, dues };
+}
+
+/**
+ * EasyHome Pro — replacement professional assistance. Finds the next
+ * eligible professional in the customer's service area for a booking, used
+ * when the assigned professional cancels or becomes unavailable.
+ */
+export async function findReplacementWorker({ booking, excludeWorkerId } = {}) {
+  const workersSnap = await collections.workers
+    .where("status", "==", "approved")
+    .limit(500)
+    .get();
+  const candidates = [];
+  for (const doc of workersSnap.docs) {
+    const worker = { id: doc.id, ...doc.data() };
+    if (excludeWorkerId && worker.id === excludeWorkerId) continue;
+    if (worker.activeJobBookingId) continue;
+    const premium = premiumActive(worker);
+    const gate = canAcceptJobs(worker, { premium });
+    if (!gate.allowed) continue;
+    const zoneSnap = booking?.serviceZoneId
+      ? await collections.serviceZones.doc(booking.serviceZoneId).get()
+      : null;
+    const zone = zoneSnap?.exists
+      ? { id: zoneSnap.id, ...zoneSnap.data(), isActive: zoneSnap.data().isActive !== false }
+      : null;
+    if (!workerMatchesBooking(worker, {
+      serviceKey: booking?.serviceKey,
+      cityName: booking?.cityName || "",
+      stateName: booking?.stateName || "",
+      areaName: booking?.areaName || "",
+      location: booking?.location,
+    }, zone)) continue;
+    candidates.push(worker);
+  }
+  const sorted = prioritizeWorkers(candidates, (worker) => premiumActive(worker));
+  return sorted[0]?.id || null;
 }
 
 export function assertBookingOwner(booking, user, roles = ["customer"]) {

@@ -18,7 +18,9 @@ import { approveWorker, syncPublicWorker } from "../lib/workers.js";
 import {
   appSettings,
   commissionFor,
+  customerPremiumActive,
   feesPctFor,
+  findReplacementWorker,
   premiumActive,
 } from "../lib/booking.js";
 import {
@@ -426,10 +428,48 @@ adminRouter.patch(
       link: "/bookings",
     });
     if (booking.workerId) {
+      const workerSnap = await collections.workers.doc(booking.workerId).get();
+      const worker = workerSnap.exists ? workerSnap.data() : {};
       await notify(booking.workerId, {
-        title: "Job cancelled",
+        title: premiumActive(worker) ? "Job cancelled · Pro priority" : "Job cancelled",
         body: `${booking.service} at ${booking.area} was cancelled by support.`,
         type: "cancelled",
+        priority: premiumActive(worker) ? "pro" : "standard",
+        link: "/worker",
+      });
+    }
+
+    // EasyHome Pro — replacement professional assistance: when an assigned
+    // professional cancels (or becomes unavailable) and the customer holds an
+    // active Pro membership, automatically find and reassign a replacement
+    // professional in the customer's service area.
+    let replacementWorkerId = null;
+    if (booking.workerId) {
+      const customerRef = collections.users.doc(booking.customerId);
+      const customerSnap = await customerRef.get();
+      const customer = customerSnap.exists ? customerSnap.data() : {};
+      if (customerPremiumActive(customer)) {
+        replacementWorkerId = await findReplacementWorker({
+          booking,
+          excludeWorkerId: booking.workerId,
+        });
+      }
+    }
+    if (replacementWorkerId) {
+      await ref.update({
+        workerId: replacementWorkerId,
+        status: "pending",
+        activeJob: false,
+        trackingAlert: false,
+        cancelReason: FieldValue.delete(),
+        cancelledAt: FieldValue.delete(),
+        cancelledBy: FieldValue.delete(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      await notify(replacementWorkerId, {
+        title: "Replacement booking assigned",
+        body: `${booking.service} at ${booking.area} was reassigned to you after the previous professional cancelled.`,
+        type: "job_assigned",
         link: "/worker",
       });
     }
@@ -590,17 +630,25 @@ adminRouter.patch(
       type: "job_accepted",
       link: `/bookings/${ref.id}/track`,
     });
-    await notify(workerId, {
-      title: "Booking assigned by support",
-      body: `${booking.service} at ${booking.area} has been assigned to you.`,
-      type: "job_assigned",
-      link: "/worker",
-    });
+    {
+      const newWorkerSnap = await collections.workers.doc(workerId).get();
+      const newWorker = newWorkerSnap.exists ? newWorkerSnap.data() : {};
+      await notify(workerId, {
+        title: premiumActive(newWorker) ? "Booking assigned by support · Pro priority" : "Booking assigned by support",
+        body: `${booking.service} at ${booking.area} has been assigned to you.`,
+        type: "job_assigned",
+        priority: premiumActive(newWorker) ? "pro" : "standard",
+        link: "/worker",
+      });
+    }
     if (previousWorkerId && previousWorkerId !== workerId) {
+      const prevWorkerSnap = await collections.workers.doc(previousWorkerId).get();
+      const prevWorker = prevWorkerSnap.exists ? prevWorkerSnap.data() : {};
       await notify(previousWorkerId, {
         title: "Job reassigned",
         body: `${booking.service} at ${booking.area} was reassigned by support. Reason: ${reason}`,
         type: "cancelled",
+        priority: premiumActive(prevWorker) ? "pro" : "standard",
         link: "/worker",
       });
     }
