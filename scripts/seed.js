@@ -26,7 +26,8 @@ const promos = [
   {
     id: "easyhome-pro",
     title: "EasyHome Pro",
-    subtitle: "Zero fees, priority jobs and a verified Pro badge for ₹1,199/month.",
+    subtitle:
+      "Lower 7% commission rate, priority urgent job alerts and a verified Pro badge for ₹250/month.",
     ctaText: "Go Pro",
     ctaLink: "/subscription",
     theme: "dark",
