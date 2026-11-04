@@ -201,9 +201,9 @@ customerRouter.post(
     const customer = customerSnap.exists ? customerSnap.data() : {};
     const customerPremium = customerPremiumActive(customer);
     const customerRules = settings.customerRules || {};
-    const freeCancellationMinutes = customerPremium
-      ? Number(customerRules.proCancellationMinutes) || 20
-      : Number(customerRules.cancellationMinutes) || 7;
+    // EasyHome Pro — free cancellation window is now universal for all
+    // customers: 5 minutes from booking creation, Pro or not.
+    const freeCancellationMinutes = Number(customerRules.cancellationMinutes) || 5;
     const urgentFeePct = Math.max(
       0,
       Number(customerRules.urgentFeePct) || 0,
@@ -638,9 +638,7 @@ customerRouter.patch(
 
       const customer = customerSnap.exists ? customerSnap.data() : {};
       const premium = customerPremiumActive(customer);
-      const windowMinutes = premium
-        ? Number(rules.proCancellationMinutes) || 20
-        : Number(rules.cancellationMinutes) || 7;
+      const windowMinutes = Number(rules.cancellationMinutes) || 5;
       const createdAt = toDate(data.createdAt);
       const fallbackDeadline = toDate(data.freeCancellationUntil);
       const deadline = createdAt

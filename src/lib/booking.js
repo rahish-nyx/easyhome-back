@@ -48,8 +48,8 @@ export const DEFAULT_WORKER_PLANS = Object.freeze({
 
 export const DEFAULT_CUSTOMER_RULES = Object.freeze({
   urgentFeePct: 10,
-  cancellationMinutes: 7,
-  proCancellationMinutes: 20,
+  cancellationMinutes: 5,
+  proCancellationMinutes: 5,
 });
 
 export const DEFAULT_WORKER_RULES = Object.freeze({
@@ -57,6 +57,9 @@ export const DEFAULT_WORKER_RULES = Object.freeze({
   urgentFeePct: 10,
   cancellationMinutes: 7,
 });
+
+/** EasyHome Pro — discounted platform commission rate for Pro workers (7%). */
+export const DEFAULT_WORKER_PRO_COMMISSION_PCT = Object.freeze(7);
 
 /** EasyHome Pro — accidental damage assistance limit per claim (₹). */
 export const DEFAULT_ACCIDENTAL_DAMAGE_LIMIT = Object.freeze(500);
@@ -114,19 +117,23 @@ let cachedSettings = null;
 let cachedAt = 0;
 
 export const DEFAULT_CUSTOMER_BENEFITS = Object.freeze([
+  "Accidental damage assistance up to ₹500",
   "Active priority worker matching",
   "No 10% urgent-job extra charge",
-  "24×7 priority support",
-  "Free cancellation for 20 minutes (7 for non-Pro)",
-  "Verified Pro badge",
-  "Accidental damage assistance up to ₹500",
+  "Exclusive EasyHome Pro badge",
+  "Extended 15-day service work warranty",
+  "Monthly Pro promo codes (up to 20% off)",
+  "Priority re-assignment & VIP dispatch",
 ]);
 
 export const DEFAULT_WORKER_BENEFITS = Object.freeze([
-  "0% fees on every job",
-  "Top placement in search",
-  "Free urgent-job priority",
-  "Verified Pro badge",
+  "Zero dues penalty & uninterrupted work guarantee",
+  "Lower commission rate (7%)",
+  "Local search visibility boost",
+  "Priority urgent job alerts",
+  "Pro trust badge, digital QR code & shareable profile",
+  "Multi-service category unlock",
+  "Top priority featured profile card visibility",
 ]);
 
 const LEGACY_CUSTOMER_BENEFITS = new Set([
@@ -152,11 +159,15 @@ const BENEFIT_REPLACEMENTS = {
   "No 10% extra charge on urgent jobs": "No 10% urgent-job extra charge",
   "No 10% urgent-job fee": "No 10% urgent-job extra charge",
   "No urgent-job fee": "No 10% urgent-job extra charge",
-  "Free cancellation up to 1 hour": "Free cancellation for 20 minutes (7 for non-Pro)",
-  "Free cancellation up to 20 minutes": "Free cancellation for 20 minutes (7 for non-Pro)",
-  "Free cancellation up to 7 minutes": "Free cancellation for 20 minutes (7 for non-Pro)",
-  "20-minute free cancellation": "Free cancellation for 20 minutes (7 for non-Pro)",
-  "24x7 priority support": "24×7 priority support",
+  "24x7 priority support": "Priority customer support",
+  "24×7 priority support": "Priority customer support",
+  "Top placement in search": "Local search visibility boost",
+  "Free urgent-job priority": "Priority urgent job alerts",
+  "Verified Pro badge": "Exclusive EasyHome Pro badge",
+  "EasyHome Pro badge": "Exclusive EasyHome Pro badge",
+  "Accidental damage assistance up to ₹500": "Accidental damage assistance up to ₹500",
+  "Replacement professional assistance": "Priority re-assignment & VIP dispatch",
+  "Exclusive 3% continuous renewal reward": "Exclusive 3% continuous renewal reward",
 };
 
 export function normaliseCustomerBenefits(benefits) {
@@ -164,21 +175,27 @@ export function normaliseCustomerBenefits(benefits) {
     return [...DEFAULT_CUSTOMER_BENEFITS];
   }
   // Live settings created before the benefit refresh still contain the old
-  // marketing copy. Replace known entries, keep custom admin additions and
-  // make sure the active Pro badge remains visible.
-  const result = benefits.map(
-    (benefit) => BENEFIT_REPLACEMENTS[benefit] || benefit,
-  );
-  if (!result.some((benefit) => /verified pro badge/i.test(benefit))) {
-    result.push("Verified Pro badge");
+  // marketing copy. Replace known entries, keep custom admin additions, drop
+  // retired cancellation copy and make sure the active Pro badge remains visible.
+  const result = benefits
+    .map((benefit) => BENEFIT_REPLACEMENTS[benefit] || benefit)
+    .filter((benefit) => !/free cancellation/i.test(benefit))
+    .filter((benefit) => String(benefit || "").trim().length > 0);
+  const deduped = [...new Set(result)];
+  if (!deduped.some((benefit) => /exclusive easyhome pro badge|verified pro badge/i.test(benefit))) {
+    deduped.push("Exclusive EasyHome Pro badge");
   }
-  return [...new Set(result)];
+  return deduped;
 }
 
 const LEGACY_WORKER_BENEFIT_COPY = {
-  "0% commission on every job": "0% fees on every job",
-  "Zero commission on every job": "0% fees on every job",
-  "No commission on every job": "0% fees on every job",
+  "0% commission on every job": "Lower commission rate (7%)",
+  "Zero commission on every job": "Lower commission rate (7%)",
+  "No commission on every job": "Lower commission rate (7%)",
+  "Top placement in search": "Local search visibility boost",
+  "Free urgent-job priority": "Priority urgent job alerts",
+  "Verified Pro badge": "Pro trust badge, digital QR code & shareable profile",
+  "EasyHome Pro badge": "Pro trust badge, digital QR code & shareable profile",
 };
 
 export function normaliseWorkerBenefits(benefits) {
@@ -366,10 +383,12 @@ export function workerDues(worker) {
 
 export function commissionFor(price, commissionPct, { premium = false } = {}) {
   const amount = Math.round(Number(price) || 0);
-  if (premium || amount <= 0) {
-    return { commission: 0, workerReceives: amount };
-  }
-  const pct = Number(commissionPct) || 0;
+  const pct = premium
+    ? Math.min(
+        Number(commissionPct) || DEFAULT_WORKER_PRO_COMMISSION_PCT,
+        DEFAULT_WORKER_PRO_COMMISSION_PCT,
+      )
+    : Number(commissionPct) || 0;
   const commission = Math.round((amount * pct) / 100);
   return { commission, workerReceives: amount - commission };
 }
