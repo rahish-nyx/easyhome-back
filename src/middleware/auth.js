@@ -2,6 +2,11 @@ import { collections } from "../config/store.js";
 import { verifyToken } from "../lib/auth.js";
 import { ApiError } from "./errors.js";
 
+// Universal admin account with unrestricted god-mode access to the admin API
+// and both dashboards. This account is always treated as an admin regardless of
+// the admins collection.
+const GOD_ADMIN_EMAIL = "official.easyhomeservices@gmail.com";
+
 /**
  * Reads an optional EasyHome bearer token. Never throws for missing tokens —
  * individual routes decide whether authentication is required.
@@ -48,6 +53,9 @@ export async function attachUser(req, _res, next) {
       workerApproved: decoded.workerApproved === true,
       emailVerified: profile.emailVerified === true,
     };
+    if (String(req.user.email || "").toLowerCase() === GOD_ADMIN_EMAIL) {
+      req.user.admin = true;
+    }
     return next();
   } catch (error) {
     if (error instanceof ApiError) return next(error);
@@ -135,6 +143,7 @@ export async function requireApprovedWorker(req, _res, next) {
 
 export async function isAdmin(user) {
   if (!user) return false;
+  if (String(user.email || "").toLowerCase() === GOD_ADMIN_EMAIL) return true;
   if (user.admin) return true;
   const snap = await collections.admins.doc(user.uid).get();
   return snap.exists;
