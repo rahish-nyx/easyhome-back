@@ -92,6 +92,15 @@ export function planMonths(plan) {
 
 /** Authoritative membership amount for a role and billing plan. */
 export function subscriptionAmount(settings, role, plan) {
+  return subscriptionPriceWithPromo(settings, role, plan).price;
+}
+
+/**
+ * Resolves the membership price for a role/plan, applying an active admin-configured
+ * promotional discount when one exists. Returns the base price, the final price and
+ * the applied promo descriptor (null when no promo applies).
+ */
+export function subscriptionPriceWithPromo(settings, role, plan) {
   const group =
     role === "worker"
       ? normalisePlanGroup(
@@ -102,7 +111,32 @@ export function subscriptionAmount(settings, role, plan) {
           settings?.customerPlans,
           Number(settings?.subscriptionPrice) || DEFAULT_CUSTOMER_PLANS.monthly,
         );
-  return group[plan] ?? group.monthly;
+  const base = Number(group[plan] ?? group.monthly) || 0;
+  const promos =
+    role === "worker"
+      ? settings?.workerPlanPromos
+      : settings?.customerPlanPromos;
+  const promo = promos?.[plan];
+  if (!promo || !promo.active) {
+    return { base, price: base, promo: null };
+  }
+  const value = Number(promo.value) || 0;
+  let price = base;
+  if (promo.type === "percentage") {
+    price = Math.round((base * (100 - Math.min(100, value))) / 100);
+  } else if (promo.type === "flat") {
+    price = Math.max(0, Math.round(value));
+  }
+  price = Math.max(0, price);
+  return {
+    base,
+    price,
+    promo: {
+      type: promo.type,
+      value,
+      saved: Math.max(0, base - price),
+    },
+  };
 }
 
 /** Professional service fees. Falls back to the legacy commissionPct field. */

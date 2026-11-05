@@ -11,6 +11,7 @@ import {
   planMonths,
   renewalGraceDays,
   subscriptionAmount,
+  subscriptionPriceWithPromo,
   workerDues,
 } from "../lib/booking.js";
 import { syncPublicWorker } from "../lib/workers.js";
@@ -379,7 +380,10 @@ paymentRouter.post(
     }
 
     const role = user.role === "worker" ? "worker" : "customer";
-    let amount = subscriptionAmount(settings, role, plan);
+    const resolved = subscriptionPriceWithPromo(settings, role, plan);
+    let amount = resolved.price;
+    const baseAmount = resolved.base;
+    const promo = resolved.promo;
     let renewalReward = null;
     // EasyHome Pro — exclusive continuous renewal reward: 3% off the next
     // eligible membership purchase (applied automatically, no coupon codes).
@@ -412,6 +416,8 @@ paymentRouter.post(
       plan,
       months,
       amount,
+      baseAmount,
+      ...(promo ? { promo } : {}),
       status: "payment_pending",
       paymentProvider: "razorpay",
       paymentStatus: "created",
@@ -426,7 +432,15 @@ paymentRouter.post(
 
     await userRef.set(
       {
-        subscription: { ...current, status: "payment_pending", plan, amount, ...(renewalReward ? { reward: renewalReward } : {}) },
+        subscription: {
+          ...current,
+          status: "payment_pending",
+          plan,
+          amount,
+          baseAmount,
+          ...(promo ? { promo } : {}),
+          ...(renewalReward ? { reward: renewalReward } : {}),
+        },
         renewalRewardPending: false,
         updatedAt: FieldValue.serverTimestamp(),
       },

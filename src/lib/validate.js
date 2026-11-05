@@ -423,6 +423,18 @@ export const planGroupSchema = z.object({
   yearly: planPrice.optional(),
 });
 
+export const planPromoSchema = z.object({
+  active: z.boolean().default(false),
+  type: z.enum(["percentage", "flat"]).default("percentage"),
+  value: z.coerce.number().min(0).max(100000),
+});
+
+export const planPromoGroupSchema = z.object({
+  monthly: planPromoSchema.optional(),
+  quarterly: planPromoSchema.optional(),
+  yearly: planPromoSchema.optional(),
+});
+
 export const customerRulesSchema = z.object({
   urgentFeePct: z.coerce.number().min(0).max(100).optional(),
   cancellationMinutes: z.coerce.number().int().min(1).max(1440).optional(),
@@ -440,6 +452,8 @@ export const settingsSchema = z.object({
   subscriptionPrice: z.coerce.number().int().min(0).max(100000).optional(),
   customerPlans: planGroupSchema.optional(),
   workerPlans: planGroupSchema.optional(),
+  customerPlanPromos: planPromoGroupSchema.optional().default({}),
+  workerPlanPromos: planPromoGroupSchema.optional().default({}),
   customerRules: customerRulesSchema.optional(),
   workerRules: workerRulesSchema.optional(),
   customerBenefits: formStringArray.optional(),
