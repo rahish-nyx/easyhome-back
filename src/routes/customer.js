@@ -87,6 +87,9 @@ async function attachBookingContacts(bookings) {
       ...booking,
       customerPhone: contact?.exists ? String(contact.data().phone || "") : "",
       workerPhone: revealWorker ? String(worker?.phone || "") : "",
+      workerRating: revealWorker ? Number(worker?.rating) || 0 : 0,
+      workerJobsCompleted: revealWorker ? Number(worker?.jobsCompleted) || 0 : 0,
+      workerPremium: revealWorker && worker ? premiumActive(worker) : false,
     };
   });
 }
