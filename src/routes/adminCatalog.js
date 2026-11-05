@@ -217,6 +217,24 @@ adminCatalogRouter.delete(
   }),
 );
 
+function makePromoCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "EH";
+  for (let index = 0; index < 6; index += 1) {
+    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return code;
+}
+
+async function assertPromoCodeAvailable(code, ignoreId = "") {
+  if (!code) return;
+  const snap = await collections.promos.where("couponCode", "==", code).get();
+  const clash = docsToJson(snap).some((promo) => promo.id !== ignoreId);
+  if (clash) {
+    throw new ApiError(409, "That promo code already exists. Try another.", "PROMO_CODE_DUPLICATE");
+  }
+}
+
 /* -------------------------------- PROMOS -------------------------------- */
 
 adminCatalogRouter.get(
@@ -233,6 +251,7 @@ adminCatalogRouter.post(
   asyncHandler(async (req, res) => {
     const body = promoSchema.parse(req.body || {});
     validatePromoDiscount(body);
+    await assertPromoCodeAvailable(body.couponCode);
     let imagePath = body.imagePath || "";
     if (req.file) {
       imagePath = (
@@ -259,6 +278,9 @@ adminCatalogRouter.patch(
   asyncHandler(async (req, res) => {
     const updates = pickProvided(promoSchema, req.body);
     validatePromoDiscount(updates);
+    if (updates.couponCode) {
+      await assertPromoCodeAvailable(updates.couponCode, req.params.id);
+    }
     if (req.file) {
       updates.imagePath = (
         await uploadCloudinaryImage(req.file.buffer, { folder: "promos" })
@@ -280,6 +302,90 @@ adminCatalogRouter.patch(
 
 adminCatalogRouter.delete(
   "/promos/:id",
+  asyncHandler(async (req, res) => {
+    await collections.promos.doc(req.params.id).delete();
+    invalidateBootstrapCache();
+    res.json({ ok: true });
+  }),
+);
+
+/* ----------------------------- UNIVERSAL PROMO CODES --------------------- */
+
+adminCatalogRouter.get(
+  "/promo-codes",
+  asyncHandler(async (_req, res) => {
+    const snap = await collections.promos.orderBy("createdAt", "desc").get();
+    const codes = docsToJson(snap).filter(
+      (promo) =>
+        promo.couponCode &&
+        ["percentage", "flat"].includes(String(promo.discountType || "")) &&
+        Number(promo.discountValue) > 0,
+    );
+    res.json({ codes });
+  }),
+);
+
+adminCatalogRouter.post(
+  "/promo-codes",
+  asyncHandler(async (req, res) => {
+    const percentage = Math.round(Number(req.body?.percentage) || 0);
+    if (percentage < 1 || percentage > 100) {
+      throw new ApiError(
+        422,
+        "Choose a percentage between 1 and 100.",
+        "PROMO_PERCENTAGE_INVALID",
+      );
+    }
+    const requested = String(req.body?.code || "")
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9_-]/g, "")
+      .slice(0, 24);
+    let code = requested;
+    if (code) {
+      await assertPromoCodeAvailable(code);
+    } else {
+      for (let attempt = 0; attempt < 8 && !code; attempt += 1) {
+        const candidate = makePromoCode();
+        // eslint-disable-next-line no-await-in-loop
+        const snap = await collections.promos.where("couponCode", "==", candidate).get();
+        if (!snap.size) code = candidate;
+      }
+    }
+    if (!code) {
+      throw new ApiError(500, "Could not generate a unique code. Try again.", "PROMO_CODE_FAILED");
+    }
+    const endsAt = req.body?.endsAt ? parseDate(req.body.endsAt) : null;
+    const ref = collections.promos.doc();
+    await ref.set({
+      title: `Universal ${percentage}% off`,
+      subtitle: "Universal EasyHome discount code for every customer service.",
+      embedHtml: "",
+      ctaText: "Book now",
+      ctaLink: "/book",
+      placement: "customer_home",
+      theme: "blue",
+      imagePath: "",
+      active: true,
+      order: 0,
+      startsAt: null,
+      endsAt,
+      couponCode: code,
+      discountType: "percentage",
+      discountValue: percentage,
+      targetFolderId: "",
+      targetServiceId: "",
+      universal: true,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    invalidateBootstrapCache();
+    res.status(201).json({ code: docToJson(await ref.get()) });
+  }),
+);
+
+adminCatalogRouter.delete(
+  "/promo-codes/:id",
   asyncHandler(async (req, res) => {
     await collections.promos.doc(req.params.id).delete();
     invalidateBootstrapCache();

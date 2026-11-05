@@ -117,23 +117,23 @@ let cachedSettings = null;
 let cachedAt = 0;
 
 export const DEFAULT_CUSTOMER_BENEFITS = Object.freeze([
-  "Accidental damage assistance up to ₹500",
-  "Active priority worker matching",
-  "No 10% urgent-job extra charge",
-  "Exclusive EasyHome Pro badge",
-  "Extended 15-day service work warranty",
-  "Monthly Pro promo codes (up to 20% off)",
-  "Priority re-assignment & VIP dispatch",
+  "Accidental Damage Assistance – Up to ₹500",
+  "Active Priority Worker Matching",
+  "No 10% Urgent-Job Extra Charge",
+  "Exclusive EasyHome Pro Badge",
+  "Extended 15-Day Service Work Warranty",
+  "Monthly Pro Promo Codes (Up to 20% Off)",
+  "Priority Re-Assignment & VIP Dispatch",
 ]);
 
 export const DEFAULT_WORKER_BENEFITS = Object.freeze([
-  "Zero dues penalty & uninterrupted work guarantee",
-  "Lower commission rate (7%)",
-  "Local search visibility boost",
-  "Priority urgent job alerts",
-  "Pro trust badge, digital QR code & shareable profile",
-  "Multi-service category unlock",
-  "Top priority featured profile card visibility",
+  "Zero Dues Penalty & Uninterrupted Work Guarantee",
+  "Lower Commission Rate (Only 7%)",
+  "Local Search Visibility Boost",
+  "Priority Urgent Job Alerts",
+  "Pro Trust Badge, Digital QR Code & Shareable Profile",
+  "Multi-Service Category Unlock (Extra Earning)",
+  "Top priority featured profile card visibility on customer home feed",
 ]);
 
 const LEGACY_CUSTOMER_BENEFITS = new Set([
@@ -152,21 +152,30 @@ const LEGACY_CUSTOMER_BENEFITS = new Set([
 ]);
 
 const BENEFIT_REPLACEMENTS = {
-  "Priority matching": "Active priority worker matching",
-  "Priority worker matching": "Active priority worker matching",
-  "Discounted service visits": "No 10% urgent-job extra charge",
-  "Member pricing": "No 10% urgent-job extra charge",
-  "No 10% extra charge on urgent jobs": "No 10% urgent-job extra charge",
-  "No 10% urgent-job fee": "No 10% urgent-job extra charge",
-  "No urgent-job fee": "No 10% urgent-job extra charge",
+  "Accidental damage assistance up to â‚¹500": "Accidental Damage Assistance – Up to ₹500",
+  "Accidental Damage Assistance â€“ Up to â‚¹500": "Accidental Damage Assistance – Up to ₹500",
+  "Accidental damage assistance up to ₹500": "Accidental Damage Assistance – Up to ₹500",
+  "Active priority worker matching": "Active Priority Worker Matching",
+  "No 10% urgent-job extra charge": "No 10% Urgent-Job Extra Charge",
+  "Exclusive EasyHome Pro badge": "Exclusive EasyHome Pro Badge",
+  "Extended 15-day service work warranty": "Extended 15-Day Service Work Warranty",
+  "Monthly Pro promo codes (up to 20% off)": "Monthly Pro Promo Codes (Up to 20% Off)",
+  "Priority re-assignment & VIP dispatch": "Priority Re-Assignment & VIP Dispatch",
+  "Priority matching": "Active Priority Worker Matching",
+  "Priority worker matching": "Active Priority Worker Matching",
+  "Discounted service visits": "No 10% Urgent-Job Extra Charge",
+  "Member pricing": "No 10% Urgent-Job Extra Charge",
+  "No 10% extra charge on urgent jobs": "No 10% Urgent-Job Extra Charge",
+  "No 10% urgent-job fee": "No 10% Urgent-Job Extra Charge",
+  "No urgent-job fee": "No 10% Urgent-Job Extra Charge",
   "24x7 priority support": "Priority customer support",
   "24×7 priority support": "Priority customer support",
-  "Top placement in search": "Local search visibility boost",
-  "Free urgent-job priority": "Priority urgent job alerts",
-  "Verified Pro badge": "Exclusive EasyHome Pro badge",
-  "EasyHome Pro badge": "Exclusive EasyHome Pro badge",
-  "Accidental damage assistance up to ₹500": "Accidental damage assistance up to ₹500",
-  "Replacement professional assistance": "Priority re-assignment & VIP dispatch",
+  "Top placement in search": "Local Search Visibility Boost",
+  "Free urgent-job priority": "Priority Urgent Job Alerts",
+  "Verified Pro badge": "Exclusive EasyHome Pro Badge",
+  "EasyHome Pro badge": "Exclusive EasyHome Pro Badge",
+  "Accidental Damage Assistance – Up to ₹500": "Accidental Damage Assistance – Up to ₹500",
+  "Replacement professional assistance": "Priority Re-Assignment & VIP Dispatch",
   "Exclusive 3% continuous renewal reward": "Exclusive 3% continuous renewal reward",
 };
 
@@ -183,19 +192,25 @@ export function normaliseCustomerBenefits(benefits) {
     .filter((benefit) => String(benefit || "").trim().length > 0);
   const deduped = [...new Set(result)];
   if (!deduped.some((benefit) => /exclusive easyhome pro badge|verified pro badge/i.test(benefit))) {
-    deduped.push("Exclusive EasyHome Pro badge");
+    deduped.push("Exclusive EasyHome Pro Badge");
   }
   return deduped;
 }
 
 const LEGACY_WORKER_BENEFIT_COPY = {
-  "0% commission on every job": "Lower commission rate (7%)",
-  "Zero commission on every job": "Lower commission rate (7%)",
-  "No commission on every job": "Lower commission rate (7%)",
-  "Top placement in search": "Local search visibility boost",
-  "Free urgent-job priority": "Priority urgent job alerts",
-  "Verified Pro badge": "Pro trust badge, digital QR code & shareable profile",
-  "EasyHome Pro badge": "Pro trust badge, digital QR code & shareable profile",
+  "Zero dues penalty & uninterrupted work guarantee": "Zero Dues Penalty & Uninterrupted Work Guarantee",
+  "Lower commission rate (7%)": "Lower Commission Rate (Only 7%)",
+  "Local search visibility boost": "Local Search Visibility Boost",
+  "Priority urgent job alerts": "Priority Urgent Job Alerts",
+  "Pro trust badge, digital QR code & shareable profile": "Pro Trust Badge, Digital QR Code & Shareable Profile",
+  "Multi-service category unlock": "Multi-Service Category Unlock (Extra Earning)",
+  "0% commission on every job": "Lower Commission Rate (Only 7%)",
+  "Zero commission on every job": "Lower Commission Rate (Only 7%)",
+  "No commission on every job": "Lower Commission Rate (Only 7%)",
+  "Top placement in search": "Local Search Visibility Boost",
+  "Free urgent-job priority": "Priority Urgent Job Alerts",
+  "Verified Pro badge": "Pro Trust Badge, Digital QR Code & Shareable Profile",
+  "EasyHome Pro badge": "Pro Trust Badge, Digital QR Code & Shareable Profile",
 };
 
 export function normaliseWorkerBenefits(benefits) {
