@@ -137,11 +137,7 @@ try {
   // 2. Worker accepts.
   const accepted = bookingId ? await call("POST", `/worker/jobs/${bookingId}/accept`, workerToken) : null;
 
-  // 3. Worker quotes and confirms the final price.
-  const priced = bookingId ? await call("PATCH", `/worker/jobs/${bookingId}/price`, workerToken, { price: 350 }) : null;
-  const confirmed = bookingId ? await call("PATCH", `/worker/jobs/${bookingId}/confirm`, workerToken) : null;
-
-  // 4. Worker starts and completes.
+  // 3. Worker starts and completes (final price is admin-set at acceptance).
   const started = bookingId ? await call("PATCH", `/worker/jobs/${bookingId}/start`, workerToken) : null;
   const completed = bookingId ? await call("PATCH", `/worker/jobs/${bookingId}/complete`, workerToken) : null;
 
@@ -169,8 +165,6 @@ try {
     create: { status: created.status, id: bookingId?.slice(0, 8), warningCount: created.json?.warnings?.length ?? 0 },
     feedCreated: feedAfterCreate?.exists === true && feedAfterCreate.data().status === "open",
     accept: accepted?.status,
-    price: priced?.status,
-    confirm: confirmed?.status,
     start: started?.status,
     complete: completed?.status,
     completedState: {
@@ -203,22 +197,20 @@ try {
     Boolean(bookingId) &&
     summary.feedCreated === true &&
     accepted?.status === 200 &&
-    priced?.status === 200 &&
-    confirmed?.status === 200 &&
     started?.status === 200 &&
     completed?.status === 200 &&
     bookingAfterComplete?.status === "completed" &&
     bookingAfterComplete?.activeJob === false &&
     !workerAfterComplete?.activeJobBookingId &&
     workerAfterComplete?.jobsCompleted === 1 &&
-    workerAfterComplete?.dues === 35 &&
-    feeAfterComplete?.amount === 35 &&
+    workerAfterComplete?.dues === 20 &&
+    feeAfterComplete?.amount === 20 &&
     feeAfterComplete?.status === "pending" &&
     paid?.status === 200 &&
-    paid?.json?.commission === 35 &&
-    paid?.json?.workerReceives === 315 &&
+    paid?.json?.commission === 20 &&
+    paid?.json?.workerReceives === 179 &&
     bookingAfterPay?.paidAt &&
-    workerAfterPay?.dues === 35 &&
+    workerAfterPay?.dues === 0 &&
     reviewed?.status === 201 &&
     workerAfterReview?.rating === 5 &&
     workerAfterReview?.reviewCount === 1 &&

@@ -8,7 +8,6 @@ import {
   availabilitySchema,
   commissionPaidSchema,
   jobPaymentModeSchema,
-  priceSchema,
   trackingLocationSchema,
   trackingPhaseSchema,
   workerProfileSchema,
@@ -204,6 +203,16 @@ workerRouter.patch(
     if (body.pricePerWork !== undefined) {
       updates.pricePerWork = Math.max(0, Math.round(body.pricePerWork));
     }
+    if (body.trades !== undefined) {
+      const premium = premiumActive(worker);
+      const incoming = Array.isArray(body.trades)
+        ? body.trades.map((trade) => String(trade || "").trim()).filter(Boolean)
+        : [];
+      const primary = incoming[0] || worker.serviceKey || worker.service || "";
+      const secondary = premium ? incoming[1] || "" : "";
+      const tertiary = premium ? incoming[2] || "" : "";
+      updates.trades = [primary, secondary, tertiary].filter(Boolean).slice(0, 3);
+    }
     if (body.lat !== undefined) {
       updates.lat = body.lat;
       updates.registeredLat = body.lat;
@@ -332,6 +341,7 @@ workerRouter.post(
       );
     }
 
+    const settings = await appSettings();
     const result = await db.runTransaction(async (tx) => {
       const bookingSnap = await tx.get(bookingRef);
       const workerSnap = await tx.get(workerRef);
@@ -426,6 +436,13 @@ workerRouter.post(
       const workerLat = coordinate(worker.currentLat) ?? coordinate(worker.lat);
       const workerLng = coordinate(worker.currentLng) ?? coordinate(worker.lng);
 
+      const finalPrice = Math.round(
+        Number(worker.pricePerWork) || Number(booking.budget) || 0,
+      );
+      const { commission, workerReceives } = commissionFor(finalPrice, feesPctFor(settings), {
+        premium: premiumActive(worker),
+      });
+
       await tx.update(bookingRef, {
         workerId: uid,
         workerName: worker.name,
@@ -441,7 +458,12 @@ workerRouter.post(
         trackingAlert: false,
         trackingNudgeCount: 0,
         acceptedAt: now,
+        confirmedAt: now,
         updatedAt: now,
+        "pricing.finalPrice": finalPrice,
+        "pricing.workerPrice": finalPrice,
+        "pricing.commission": commission,
+        "pricing.workerReceives": workerReceives,
         statusHistory: FieldValue.arrayUnion(
           phaseHistoryEntry({
             phase: TRACKING_PHASES.ASSIGNED,
@@ -474,6 +496,7 @@ workerRouter.post(
           activeJob: true,
           trackingPhase: TRACKING_PHASES.ASSIGNED,
         },
+        finalPrice,
         customerId: booking.customerId,
         service: booking.service,
       };
@@ -487,108 +510,12 @@ workerRouter.post(
 
     await notify(result.customerId, {
       title: "Worker found!",
-      body: `${result.booking.workerName} accepted your ${result.service} booking.`,
+      body: `₹${result.finalPrice} confirmed for ${result.booking.service}. ${result.booking.workerName} will contact you shortly.`,
       type: "job_accepted",
       link: `/bookings/${req.params.id}/track`,
     });
 
-    res.json({ ok: true, booking: { id: req.params.id, ...result.booking } });
-  }),
-);
-
-workerRouter.patch(
-  "/worker/jobs/:id/price",
-  requireAuth,
-  requireApprovedWorker,
-  asyncHandler(async (req, res) => {
-    const { price } = priceSchema.parse(req.body || {});
-    const uid = req.user.uid;
-    const settings = await appSettings();
-    const bookingRef = collections.bookings.doc(req.params.id);
-
-    const result = await db.runTransaction(async (tx) => {
-      const { booking } = await assertOwnJob(tx, req.params.id, uid);
-      if (booking.status !== "accepted") {
-        throw new ApiError(409, "Set a price after accepting the job.", "STATUS_INVALID");
-      }
-      if (booking.pricing?.confirmedAt) {
-        throw new ApiError(409, "The price is already confirmed.", "PRICE_CONFIRMED");
-      }
-
-      const workerSnap = await tx.get(collections.workers.doc(uid));
-      const worker = workerSnap.data();
-      const { commission, workerReceives } = commissionFor(
-        price,
-        feesPctFor(settings),
-        {
-          premium: premiumActive(worker),
-        },
-      );
-
-      await tx.update(bookingRef, {
-        "pricing.workerPrice": Math.round(price),
-        "pricing.commission": commission,
-        "pricing.workerReceives": workerReceives,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-
-      return { booking, commission, workerReceives };
-    });
-
-    await notify(result.booking.customerId, {
-      title: "Final price quoted",
-      body: `${result.booking.workerName} quoted ₹${Math.round(price)} for ${result.booking.service}. Confirm or send a counter-offer.`,
-      type: "price",
-      link: "/bookings",
-    });
-
-    res.json({ ok: true, commission: result.commission, workerReceives: result.workerReceives });
-  }),
-);
-
-workerRouter.patch(
-  "/worker/jobs/:id/confirm",
-  requireAuth,
-  requireApprovedWorker,
-  asyncHandler(async (req, res) => {
-    const body = priceSchema.partial().parse(req.body || {});
-    const uid = req.user.uid;
-    const bookingRef = collections.bookings.doc(req.params.id);
-
-    const result = await db.runTransaction(async (tx) => {
-      const { booking } = await assertOwnJob(tx, req.params.id, uid);
-      if (booking.status !== "accepted") {
-        throw new ApiError(409, "This job is not in a negotiable state.", "STATUS_INVALID");
-      }
-      if (booking.pricing?.confirmedAt) {
-        throw new ApiError(409, "The price is already confirmed.", "PRICE_CONFIRMED");
-      }
-
-      const finalPrice = Math.round(
-        Number(body.price) || Number(booking.pricing?.customerOffer) || Number(booking.pricing?.workerPrice) || 0,
-      );
-      if (finalPrice < 99) {
-        throw new ApiError(422, "Set a valid final price first.", "PRICE_REQUIRED");
-      }
-
-      await tx.update(bookingRef, {
-        status: "accepted",
-        "pricing.finalPrice": finalPrice,
-        "pricing.confirmedAt": FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-
-      return { booking, finalPrice };
-    });
-
-    await notify(result.booking.customerId, {
-      title: "Price confirmed",
-      body: `₹${result.finalPrice} confirmed for ${result.booking.service}. ${result.booking.workerName} will contact you shortly.`,
-      type: "price",
-      link: "/bookings",
-    });
-
-    res.json({ ok: true, finalPrice: result.finalPrice });
+    res.json({ ok: true, booking: { id: req.params.id, ...result.booking }, finalPrice: result.finalPrice });
   }),
 );
 
@@ -605,8 +532,11 @@ workerRouter.patch(
       if (["completed", "cancelled"].includes(booking.status)) {
         throw new ApiError(409, "This job is already closed.", "STATUS_INVALID");
       }
-      if (!booking.pricing?.confirmedAt) {
-        throw new ApiError(409, "Confirm the final price before starting.", "PRICE_NOT_CONFIRMED");
+      const finalPrice = Math.round(
+        Number(booking.pricing?.finalPrice) || Number(booking.pricing?.workerPrice) || Number(booking.budget) || 0,
+      );
+      if (!finalPrice || finalPrice < 99) {
+        throw new ApiError(409, "The admin-set final price is required before starting.", "PRICE_NOT_CONFIGURED");
       }
       const currentPhase = phaseForBooking(booking);
       if (currentPhase === TRACKING_PHASES.WORKING) {
@@ -694,11 +624,14 @@ workerRouter.patch(
           { currentPhase, requestedPhase: phase, nextPhase: nextPhase(currentPhase) },
         );
       }
+      const finalPrice = Math.round(
+        Number(booking.pricing?.finalPrice) || Number(booking.pricing?.workerPrice) || Number(booking.budget) || 0,
+      );
       if (
         [TRACKING_PHASES.WORKING, TRACKING_PHASES.COMPLETED].includes(phase) &&
-        !booking.pricing?.confirmedAt
+        !finalPrice
       ) {
-        throw new ApiError(409, "Confirm the final price first.", "PRICE_NOT_CONFIRMED");
+        throw new ApiError(409, "The admin-set final price is required before starting.", "PRICE_NOT_CONFIGURED");
       }
 
       const hasPoint =
@@ -863,10 +796,13 @@ workerRouter.patch(
               { lat: targetLat, lng: targetLng },
             )
           : null;
+      const finalPrice = Math.round(
+        Number(booking.pricing?.finalPrice) || Number(booking.pricing?.workerPrice) || Number(booking.budget) || 0,
+      );
       const autoArrived =
         meters !== null &&
         meters <= AUTO_ARRIVE_METERS &&
-        Boolean(booking.pricing?.confirmedAt) &&
+        Boolean(finalPrice) &&
         [TRACKING_PHASES.ASSIGNED, TRACKING_PHASES.EN_ROUTE].includes(currentPhase);
 
       const updates = {
@@ -971,9 +907,6 @@ workerRouter.patch(
         );
       if (!hasStarted) {
         throw new ApiError(409, "Only ongoing jobs can be completed.", "STATUS_INVALID");
-      }
-      if (!booking.pricing?.confirmedAt) {
-        throw new ApiError(409, "Confirm the final price first.", "PRICE_NOT_CONFIRMED");
       }
       const workerSnap = await tx.get(workerRef);
       const worker = workerSnap.exists ? workerSnap.data() : {};

@@ -8,7 +8,6 @@ import {
   bookingSchema,
   cancelSchema,
   chatSchema,
-  offerSchema,
   paymentSchema,
   reviewSchema,
   subscriptionRequestSchema,
@@ -22,6 +21,7 @@ import {
   planMonths,
   premiumActive,
   subscriptionAmount,
+  workerDues,
 } from "../lib/booking.js";
 import { nearestServiceArea } from "../lib/geo.js";
 import { uploadCloudinaryImage } from "../lib/media.js";
@@ -491,122 +491,6 @@ customerRouter.post(
 );
 
 customerRouter.patch(
-  "/bookings/:id/offer",
-  requireAuth,
-  asyncHandler(async (req, res) => {
-    const { price } = offerSchema.parse(req.body || {});
-    const ref = collections.bookings.doc(req.params.id);
-    const booking = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      if (!snap.exists) throw new ApiError(404, "Booking not found.", "BOOKING_NOT_FOUND");
-      const data = snap.data();
-      if (data.customerId !== req.user.uid) {
-        throw new ApiError(403, "This is not your booking.", "BOOKING_FORBIDDEN");
-      }
-      if (data.status !== "accepted") {
-        throw new ApiError(409, "You can only negotiate after a worker accepts.", "STATUS_INVALID");
-      }
-      if (data.pricing?.confirmedAt) {
-        throw new ApiError(409, "The price is already confirmed.", "PRICE_CONFIRMED");
-      }
-      if (data.pricing?.customerOffer) {
-        throw new ApiError(409, "You already sent one counter-offer.", "OFFER_EXISTS");
-      }
-      await tx.update(ref, {
-        "pricing.customerOffer": Math.round(price),
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      return { ...data, pricing: { ...data.pricing, customerOffer: Math.round(price) } };
-    });
-
-    await notify(booking.workerId, {
-      title: "Customer counter-offer",
-      body: `${booking.customerName} offered ₹${Math.round(price)} for ${booking.service}.`,
-      type: "offer",
-      link: "/worker",
-    });
-
-    const saved = await ref.get();
-    res.json({ ok: true, booking: docToJson(saved) });
-  }),
-);
-
-/**
- * Customer accepts the worker's quoted price. This is the customer-side
- * mirror of the worker confirm endpoint, so a booking can be unlocked even
- * when the worker is waiting on the customer.
- */
-customerRouter.patch(
-  "/bookings/:id/accept-price",
-  requireAuth,
-  asyncHandler(async (req, res) => {
-    const uid = req.user.uid;
-    const ref = collections.bookings.doc(req.params.id);
-    const settings = await appSettings();
-
-    const result = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      if (!snap.exists) throw new ApiError(404, "Booking not found.", "BOOKING_NOT_FOUND");
-      const booking = snap.data();
-      if (booking.customerId !== uid) {
-        throw new ApiError(403, "This is not your booking.", "BOOKING_FORBIDDEN");
-      }
-      if (booking.status !== "accepted") {
-        throw new ApiError(409, "This job is not in a negotiable state.", "STATUS_INVALID");
-      }
-      if (booking.pricing?.confirmedAt) {
-        throw new ApiError(409, "The price is already confirmed.", "PRICE_CONFIRMED");
-      }
-
-      const price = Math.round(
-        Number(booking.pricing?.workerPrice) || Number(booking.pricing?.customerOffer) || 0,
-      );
-      if (price < 99) {
-        throw new ApiError(422, "The worker has not quoted a price yet.", "PRICE_REQUIRED");
-      }
-
-      const workerSnap = booking.workerId
-        ? await tx.get(collections.workers.doc(booking.workerId))
-        : null;
-      const worker = workerSnap?.exists ? workerSnap.data() : null;
-      const { commission, workerReceives } = commissionFor(
-        price,
-        feesPctFor(settings),
-        {
-          premium: premiumActive(worker),
-        },
-      );
-
-      await tx.update(ref, {
-        "pricing.finalPrice": price,
-        "pricing.commission": commission,
-        "pricing.workerReceives": workerReceives,
-        "pricing.confirmedAt": FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-
-      return { booking, price, commission, workerReceives };
-    });
-
-    if (result.booking.workerId) {
-      await notify(result.booking.workerId, {
-        title: "Price accepted ✅",
-        body: `${result.booking.customerName} accepted ₹${result.price} for ${result.booking.service}. You can start the job now.`,
-        type: "price",
-        link: "/worker",
-      });
-    }
-
-    res.json({
-      ok: true,
-      finalPrice: result.price,
-      commission: result.commission,
-      workerReceives: result.workerReceives,
-    });
-  }),
-);
-
-customerRouter.patch(
   "/bookings/:id/cancel",
   requireAuth,
   asyncHandler(async (req, res) => {
@@ -802,6 +686,32 @@ customerRouter.patch(
             updatedAt: FieldValue.serverTimestamp(),
           });
         }
+
+        // The customer has confirmed the final price payment, so the platform
+        // fee obligation is settled: approve the commission and clear the
+        // worker dues. Keeps the one-active-job / penalty lock release correct
+        // and mirrors the Razorpay commission verify settlement.
+        const feeSnap = await tx.get(commissionRef);
+        const fee = feeSnap.exists ? feeSnap.data() : null;
+        const settledAt = FieldValue.serverTimestamp();
+        if (fee && fee.status !== "approved") {
+          await tx.update(commissionRef, {
+            status: "approved",
+            approvedAt: settledAt,
+            approvedBy: "customer",
+            updatedAt: settledAt,
+          });
+        }
+        const freshWorkerSnap = await tx.get(workerRef);
+        const workerNow = freshWorkerSnap.exists ? freshWorkerSnap.data() : worker;
+        const feeAmount = Math.max(0, Number(fee?.amount ?? commission) || 0);
+        const remaining = Math.max(0, Math.round(workerDues(workerNow) - feeAmount));
+        await tx.update(workerRef, {
+          dues: remaining,
+          dueCommissionAmount: remaining,
+          hasPendingCommission: remaining > 0,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
       }
 
       return { booking, commission, workerReceives, premium, urgentFee, paymentTotal };
@@ -1382,8 +1292,8 @@ customerRouter.get(
     if (!isCustomer && !isWorker && !req.user.admin) {
       throw new ApiError(403, "You do not have access to this contact.", "FORBIDDEN");
     }
-    if (isWorker && !booking.pricing?.confirmedAt) {
-      throw new ApiError(403, "Confirm the price to see the customer's phone number.", "PRICE_NOT_CONFIRMED");
+    if (isWorker && !booking.pricing?.finalPrice) {
+      throw new ApiError(403, "The final price is not set for this job yet.", "PRICE_NOT_CONFIGURED");
     }
     const contactSnap = await collections.bookings
       .doc(req.params.id)

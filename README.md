@@ -153,7 +153,6 @@ All routes are prefixed by `/api`.
 | Method | Path |
 | --- | --- |
 | POST/GET | `/bookings` |
-| PATCH | `/bookings/:id/offer`, `/bookings/:id/accept-price` |
 | PATCH | `/bookings/:id/cancel`, `/bookings/:id/payment` |
 | POST | `/bookings/:id/review` |
 | GET | `/bookings/:id/contact` |
@@ -166,8 +165,8 @@ All routes are prefixed by `/api`.
 | Method | Path |
 | --- | --- |
 | PATCH | `/worker/profile`, `/worker/availability` |
-| POST | `/worker/jobs/:id/accept`, `/worker/jobs/:id/price` |
-| POST | `/worker/jobs/:id/confirm`, `/worker/jobs/:id/start`, `/worker/jobs/:id/complete` |
+| POST | `/worker/jobs/:id/accept` |
+| POST | `/worker/jobs/:id/start`, `/worker/jobs/:id/complete` |
 | POST | `/payment/commission/order`, `/payment/commission/verify` |
 | GET | `/worker/earnings`, `/worker/commission` |
 | POST | `/worker/kyc`, `/worker/welcome-email` |

@@ -13,11 +13,11 @@ import { jobFeedDocId } from "../src/lib/jobFeed.js";
  * Modes:
  *   create                  create a verified customer + approved worker
  *   book                    create a booking as the customer (prints id + token)
- *   ongoing <bookingId>     accept, quote, confirm, start, ping location
+ *   ongoing <bookingId>     accept, start, ping location
  *   ping <bookingId> [dLat] [dLng]
  *                           move the worker relative to the zone centre
  *   finish <bookingId>      mark the job complete (worker side)
- *   drive <bookingId>       worker accepts, quotes, confirms, starts, completes
+ *   drive <bookingId>       worker accepts, starts, completes
  *   status <bookingId>      print booking/payment/review state
  *   cleanup <bookingId>     delete the booking and every fixture row
  *
@@ -177,8 +177,6 @@ if (mode === "create") {
   const token = workerToken(state);
   const steps = {};
   steps.accept = await api("POST", `/worker/jobs/${bookingId}/accept`, token);
-  steps.price = await api("PATCH", `/worker/jobs/${bookingId}/price`, token, { price: 350 });
-  steps.confirm = await api("PATCH", `/worker/jobs/${bookingId}/confirm`, token);
   steps.start = await api("PATCH", `/worker/jobs/${bookingId}/start`, token);
   steps.location = await api("PATCH", `/worker/jobs/${bookingId}/location`, token, {
     lat: state.zone.lat + 0.004,
@@ -229,8 +227,6 @@ if (mode === "create") {
   const token = workerToken(state);
   const steps = {};
   steps.accept = await api("POST", `/worker/jobs/${bookingId}/accept`, token);
-  steps.price = await api("PATCH", `/worker/jobs/${bookingId}/price`, token, { price: 350 });
-  steps.confirm = await api("PATCH", `/worker/jobs/${bookingId}/confirm`, token);
   steps.start = await api("PATCH", `/worker/jobs/${bookingId}/start`, token);
   steps.complete = await api("PATCH", `/worker/jobs/${bookingId}/complete`, token);
   console.log(JSON.stringify(
