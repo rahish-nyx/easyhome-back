@@ -156,7 +156,7 @@ export const DEFAULT_CUSTOMER_BENEFITS = Object.freeze([
   "No 10% Urgent-Job Extra Charge",
   "Exclusive EasyHome Pro Badge",
   "Extended 15-Day Service Work Warranty",
-  "Monthly Pro Promo Codes (Up to 20% Off)",
+  "Monthly Pro Promo Codes (Up To 20% Off)",
   "Priority Re-Assignment & VIP Dispatch",
 ]);
 
