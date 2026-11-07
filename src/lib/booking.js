@@ -211,6 +211,7 @@ const BENEFIT_REPLACEMENTS = {
   "Accidental Damage Assistance – Up To ₹500": "Accidental Damage Assistance – Up To ₹500",
   "Replacement professional assistance": "Priority Re-Assignment & VIP Dispatch",
   "Exclusive 3% continuous renewal reward": "Exclusive 3% continuous renewal reward",
+  "Top priority featured profile card visibility": "Top priority featured profile card visibility on customer home feed",
 };
 
 export function normaliseCustomerBenefits(benefits) {
