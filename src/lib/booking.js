@@ -186,14 +186,14 @@ const LEGACY_CUSTOMER_BENEFITS = new Set([
 ]);
 
 const BENEFIT_REPLACEMENTS = {
-  "Accidental damage assistance up to â‚¹500": "Accidental Damage Assistance – Up to ₹500",
-  "Accidental Damage Assistance â€“ Up to â‚¹500": "Accidental Damage Assistance – Up to ₹500",
-  "Accidental damage assistance up to ₹500": "Accidental Damage Assistance – Up to ₹500",
+  "Accidental damage assistance up to ₹500": "Accidental Damage Assistance – Up To ₹500",
+  "Accidental Damage Assistance – Up To ₹500": "Accidental Damage Assistance – Up To ₹500",
+  "Accidental damage assistance up to ₹500": "Accidental Damage Assistance – Up To ₹500",
   "Active priority worker matching": "Active Priority Worker Matching",
   "No 10% urgent-job extra charge": "No 10% Urgent-Job Extra Charge",
   "Exclusive EasyHome Pro badge": "Exclusive EasyHome Pro Badge",
   "Extended 15-day service work warranty": "Extended 15-Day Service Work Warranty",
-  "Monthly Pro promo codes (up to 20% off)": "Monthly Pro Promo Codes (Up to 20% Off)",
+  "Monthly Pro promo codes (up to 20% off)": "Monthly Pro Promo Codes (Up To 20% Off)",
   "Priority re-assignment & VIP dispatch": "Priority Re-Assignment & VIP Dispatch",
   "Priority matching": "Active Priority Worker Matching",
   "Priority worker matching": "Active Priority Worker Matching",
@@ -208,7 +208,7 @@ const BENEFIT_REPLACEMENTS = {
   "Free urgent-job priority": "Priority Urgent Job Alerts",
   "Verified Pro badge": "Exclusive EasyHome Pro Badge",
   "EasyHome Pro badge": "Exclusive EasyHome Pro Badge",
-  "Accidental Damage Assistance – Up to ₹500": "Accidental Damage Assistance – Up to ₹500",
+  "Accidental Damage Assistance – Up To ₹500": "Accidental Damage Assistance – Up To ₹500",
   "Replacement professional assistance": "Priority Re-Assignment & VIP Dispatch",
   "Exclusive 3% continuous renewal reward": "Exclusive 3% continuous renewal reward",
 };
