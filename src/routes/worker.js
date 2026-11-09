@@ -27,6 +27,7 @@ import { workerDistanceKm, workerMatchesBooking } from "../lib/matching.js";
 import { jobFeedDocId, updateJobFeedStatus } from "../lib/jobFeed.js";
 import { markReferralServiceCompleted } from "../lib/referrals.js";
 import { notify, notifyAdmins, sendMail, emailLayout } from "../lib/notify.js";
+import { emitToUser, emitToWorkers, emitBookingStatusUpdate } from "../lib/socket.js";
 import {
   commissionTelegramMessage,
   sendTelegramAlert,
@@ -515,6 +516,12 @@ workerRouter.post(
       link: `/bookings/${req.params.id}/track`,
     });
 
+    emitToUser(String(result.booking?.customerId || req.params.id), "jobAccepted", {
+      bookingId: req.params.id,
+      booking: { id: req.params.id, ...result.booking },
+      workerId: uid,
+    });
+    emitToWorkers("updateWorkerDashboard", { bookingId: req.params.id, status: "accepted", workerId: uid });
     res.json({ ok: true, booking: { id: req.params.id, ...result.booking }, finalPrice: result.finalPrice });
   }),
 );
@@ -576,6 +583,12 @@ workerRouter.patch(
       link: `/bookings/${req.params.id}/track`,
     });
 
+    emitBookingStatusUpdate({
+      bookingId: req.params.id,
+      status: "ongoing",
+      workerId: uid,
+      customerId: booking?.customerId,
+    });
     res.json({ ok: true, phase: TRACKING_PHASES.WORKING });
   }),
 );
@@ -762,6 +775,12 @@ workerRouter.patch(
       }
     }
 
+    emitBookingStatusUpdate({
+      bookingId: req.params.id,
+      status: `phase:${result.phase}`,
+      workerId: uid,
+      customerId: booking?.customerId,
+    });
     res.json({ ok: true, phase: result.phase });
   }),
 );
@@ -872,6 +891,13 @@ workerRouter.patch(
       ]);
     }
 
+    emitBookingStatusUpdate({
+      bookingId: req.params.id,
+      status: "completed",
+      workerId: uid,
+      customerId: booking?.customerId,
+      phase: result.phase,
+    });
     res.json({
       ok: true,
       bookingId: req.params.id,

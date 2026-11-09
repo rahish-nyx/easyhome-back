@@ -2,6 +2,7 @@ import { app } from "./app.js";
 import { env } from "./config/env.js";
 import { connectDb } from "./config/db.js";
 import { startTrackingWatchdog } from "./lib/tracking.js";
+import { initSocket } from "./lib/socket.js";
 
 connectDb().catch((error) => {
   console.error("MongoDB is not available at startup:", error.message);
@@ -14,6 +15,8 @@ const server = app.listen(env.port, () => {
   console.log(`  env: ${env.nodeEnv} (MongoDB Atlas)`);
   console.log("");
 });
+
+const io = initSocket(server);
 
 // Lightweight in-process accountability watchdog. The worker PWA also runs a
 // local watchdog so the buzzer fires immediately even on a slow connection.
@@ -34,7 +37,7 @@ function shutdown(signal) {
 
   server.close(() => {
     console.log("Server closed cleanly.");
-    process.exit(0);
+    io?.close(() => process.exit(0));
   });
 }
 

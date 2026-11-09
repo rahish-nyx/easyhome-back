@@ -37,6 +37,7 @@ import {
   promoPaymentTotal,
 } from "../lib/promos.js";
 import { sendTelegramAlert, subscriptionTelegramMessage } from "../lib/telegram.js";
+import { emitToUser, emitToWorkers, emitBookingStatusUpdate } from "../lib/socket.js";
 import { OUT_OF_ZONE_MESSAGE, validateBookingZone } from "../lib/zones.js";
 import {
   PHASE_META,
@@ -489,6 +490,11 @@ customerRouter.post(
     }
 
     const saved = await bookingRef.get();
+    emitToWorkers("newBooking", { bookingId: saved.id, booking: docToJson(saved) });
+    emitToUser(String(saved.customerId || req.user.uid), "updateCustomerDashboard", {
+      bookingId: saved.id,
+      booking: docToJson(saved),
+    });
     res.status(201).json({ booking: docToJson(saved), warnings });
   }),
 );
@@ -586,6 +592,13 @@ customerRouter.patch(
         link: "/worker",
       });
     }
+
+    emitBookingStatusUpdate({
+      bookingId: ref.id,
+      status: "cancelled",
+      customerId: req.user.uid,
+      workerId: result.workerId,
+    });
 
     res.json({ ok: true });
   }),
