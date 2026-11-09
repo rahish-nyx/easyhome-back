@@ -1,3 +1,8 @@
+import { createServer } from "node:http";
 import { app } from "../src/app.js";
+import { initSocket } from "../src/lib/socket.js";
 
-export default app;
+const server = createServer(app);
+initSocket(server);
+
+export default server;
