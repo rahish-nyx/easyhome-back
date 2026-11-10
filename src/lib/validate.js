@@ -427,6 +427,8 @@ export const planPromoSchema = z.object({
   active: z.boolean().default(false),
   type: z.enum(["percentage", "flat"]).default("percentage"),
   value: z.coerce.number().min(0).max(100000),
+  startsAt: z.string().trim().max(40).optional().nullable(),
+  endsAt: z.string().trim().max(40).optional().nullable(),
 });
 
 export const planPromoGroupSchema = z.object({

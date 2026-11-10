@@ -1178,6 +1178,47 @@ customerRouter.get(
   }),
 );
 
+// Customers can remove a completed booking from their history. Only completed
+// bookings are accepted — active/pending/ongoing jobs are never deletable here.
+customerRouter.delete(
+  "/bookings/:id",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const bookingRef = collections.bookings.doc(req.params.id);
+    const snap = await bookingRef.get();
+    if (!snap.exists) {
+      throw new ApiError(404, "Booking not found.", "BOOKING_NOT_FOUND");
+    }
+    const booking = snap.data();
+    const isCustomer = booking.customerId === req.user.uid;
+    const allowed =
+      isCustomer || booking.workerId === req.user.uid || Boolean(req.user.admin);
+    if (!allowed) {
+      throw new ApiError(403, "You do not have access to this booking.", "FORBIDDEN");
+    }
+    if (booking.status !== "completed") {
+      throw new ApiError(
+        422,
+        "Only completed bookings can be removed from your history.",
+        "BOOKING_NOT_COMPLETED",
+      );
+    }
+
+    const batch = db.batch();
+    batch.delete(bookingRef);
+    batch.delete(bookingRef.collection("private").doc(bookingRef.id));
+    if (booking.workerId) {
+      batch.delete(
+        collections.jobFeed.doc(jobFeedDocId(bookingRef.id, booking.workerId)),
+      );
+    }
+    batch.delete(collections.urgentPublic.doc(bookingRef.id));
+    await batch.commit();
+
+    res.json({ ok: true });
+  }),
+);
+
 customerRouter.get(
   "/notifications",
   requireAuth,

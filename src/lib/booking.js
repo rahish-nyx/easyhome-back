@@ -95,10 +95,19 @@ export function subscriptionAmount(settings, role, plan) {
   return subscriptionPriceWithPromo(settings, role, plan).price;
 }
 
+function planWindowOpen(promo, now = Date.now()) {
+  const starts = promo?.startsAt ? new Date(promo.startsAt).getTime() : 0;
+  const ends = promo?.endsAt ? new Date(promo.endsAt).getTime() : 0;
+  if (Number.isFinite(starts) && starts > now) return false;
+  if (Number.isFinite(ends) && ends > 0 && ends < now) return false;
+  return true;
+}
+
 /**
  * Resolves the membership price for a role/plan, applying an active admin-configured
- * promotional discount when one exists. Returns the base price, the final price and
- * the applied promo descriptor (null when no promo applies).
+ * promotional discount when one exists and is currently within its offer window.
+ * Returns the base price, the final price and the applied promo descriptor (null when
+ * no promo applies).
  */
 export function subscriptionPriceWithPromo(settings, role, plan) {
   const group =
@@ -117,7 +126,12 @@ export function subscriptionPriceWithPromo(settings, role, plan) {
       ? settings?.workerPlanPromos
       : settings?.customerPlanPromos;
   const promo = promos?.[plan];
-  if (!promo || !promo.active) {
+  const promoLive =
+    Boolean(promo && promo.active) &&
+    planWindowOpen(promo) &&
+    (String(promo.type || "") === "percentage" ||
+      String(promo.type || "") === "flat");
+  if (!promo || !promoLive) {
     return { base, price: base, promo: null };
   }
   const value = Number(promo.value) || 0;
@@ -135,6 +149,8 @@ export function subscriptionPriceWithPromo(settings, role, plan) {
       type: promo.type,
       value,
       saved: Math.max(0, base - price),
+      startsAt: promo.startsAt ? new Date(promo.startsAt).toISOString() : null,
+      endsAt: promo.endsAt ? new Date(promo.endsAt).toISOString() : null,
     },
   };
 }

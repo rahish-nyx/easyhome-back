@@ -437,8 +437,18 @@ workerRouter.post(
       const workerLat = coordinate(worker.currentLat) ?? coordinate(worker.lat);
       const workerLng = coordinate(worker.currentLng) ?? coordinate(worker.lng);
 
+      // Price rules:
+      //  - Customer booked normally from the service catalog -> admin/service-set
+      //    price (booking.budget) is final. The worker's own pricePerWork must NOT
+      //    override it.
+      //  - Customer booked specially from a worker's profile card -> that worker's
+      //    pricePerWork becomes the final price (booking.reservedForWorkerId).
       const finalPrice = Math.round(
-        Number(worker.pricePerWork) || Number(booking.budget) || 0,
+        Number(
+          (booking.preferredWorkerId && worker.pricePerWork
+            ? worker.pricePerWork
+            : booking.budget) || 0,
+        ) || 0,
       );
       const { commission, workerReceives } = commissionFor(finalPrice, feesPctFor(settings), {
         premium: premiumActive(worker),
